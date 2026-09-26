@@ -5,9 +5,10 @@ import { COMPANIONS, byId } from "./companions.js";
 import { createMascot, renderThumbnail } from "./mascot3d.js";
 import { ALL, quest, planToday, getLog, setLog, complete, isActiveDay, monthStats, streak, insurerView, demoLog, INSURERS, RULES } from "./quests.js";
 import { decide, directWithModel } from "./director.js";
-import { node } from "./chat.js";
+import { FREE, ITEMS, planQuestions, extensionNeeded, extensionQuestions, ackFor, analyse, closing } from "./bot.js";
 import { stageOf, buildNudges, availableNow, daysBetween } from "./nudges.js";
 import { readAppleHealth } from "./appleHealth.js";
+import { isNative, native, platform } from "./native.js";
 import { hasWebGPU, loadModel, isLoaded, getEngine } from "./slm.js";
 
 const $app = document.getElementById("app");
@@ -31,14 +32,24 @@ function thumb(id, exp = "happy", size = 200) { const k = `${id}:${exp}:${size}`
 let tapCount = 0;
 function onMascotTap() {
   tapCount++;
-  if (S.tab === "home" && S.s.onboarded && tapCount % 3 === 0) { S.sheet = { type: "chat" }; startChat(); render(); }
+  if (S.tab === "home" && S.s.onboarded && tapCount % 3 === 0) { S.tab = "chat"; startFree(); }
 }
 
 // ---------- data ----------
 async function save(patch) { S.s = { ...S.s, ...patch }; await kv.set("settings", S.s); }
 const sources = () => ["steps", "sleep", "heart", "daylight", "places", "checkin"].filter(k => S.s.consent[k]);
 
+async function liveSync() {
+  if (!isNative || S.s.persona !== "Apple Health (live)") return;
+  const days = await native.sync(90);
+  if (days?.length) {
+    const have = new Map((await allDays()).map(d => [d.date, d]));
+    for (const d of days) { if (d.moodHealth != null && have.get(d.date)?.mood == null) d.mood = Math.round(d.moodHealth); delete d.moodHealth; delete d.sleepSrc; delete d.stepsSrc; }
+    await putDays(days);
+  }
+}
 async function refresh() {
+  await liveSync();
   S.days = await allDays();
   let anchor = await kv.get("anchor");
   S.result = analyze(S.days, sources(), { anchor });
@@ -73,15 +84,22 @@ async function refresh() {
   if (isLoaded()) directWithModel(getEngine(), { hour: hour(), companionId: S.s.companion }, rule).then(d => { S.dir = d; applyDirector(); });
   document.body.classList.toggle("night", hour() >= 20 || hour() < 6);
   render();
-  maybeBanner();
+  maybeBanner().then(() => setTimeout(maybeInvite, 1800));
 }
 function shiftDays() { const off = S.result?.signals?.filter(x => x.status === "shift").map(x => x.offDays || 0) || []; return off.length ? Math.max(...off) : 0; }
+async function maybeInvite() {
+  if (S.stage < 2 || S.sheet || S.tab === "chat" || S.chat?.mode === "guided") return false;
+  const snooze = await kv.get("inviteSnooze"), last = await kv.get("lastCheckin");
+  if ((snooze && snooze > today()) || (last && daysBetween(last, today()) < 7)) return false;
+  S.sheet = { type: "invite" }; render(); return true;
+}
 async function maybeBanner() {
   const top = S.nudges[0]; if (!top || S.sheet) return;
   const seen = (await kv.get("seenNudges")) || {}, key = `${today()}:${top.kind}:${top.title}`;
   if (seen[key]) return;
   seen[key] = 1; await kv.set("seenNudges", seen);
   showBanner(top);
+  if (isNative) native.notify(top.title, top.body, key);
 }
 function showBanner(n) {
   document.querySelector(".banner")?.remove();
@@ -205,25 +223,112 @@ function quests() {
 
 function chat() {
   const c = byId(S.s.companion);
-  if (!S.chat) startChat();
-  return `<div class="top"><div class="row"><img src="${thumb(c.id, "happy", 120)}" alt="" style="width:48px;height:48px"><div><b>${esc(c.name)}</b><div class="tiny muted">${esc(c.trait)}</div></div></div></div>
-  <div class="msgs">${S.chat.msgs.map(m => m.me ? `<div class="msg me">${esc(m.text)}</div>` : `<div class="msgrow"><img src="${thumb(c.id, m.exp || "happy", 80)}" alt=""><div class="msg them">${esc(m.text)}</div></div>`).join("")}
-  ${S.chat.typing ? `<div class="msgrow"><img src="${thumb(c.id, "happy", 80)}" alt=""><div class="msg them typing"><i></i><i></i><i></i></div></div>` : ""}</div>
-  ${!S.chat.typing ? `<div class="choices">${S.chat.choices.map(([l, n]) => `<button class="choice" data-act="say" data-arg="${esc(n)}" data-label="${esc(l)}">${esc(l)}</button>`).join("")}${!S.chat.choices.length ? `<button class="choice" data-act="restartChat">Start again</button>` : ""}</div>` : ""}
-  <p class="tiny muted" style="text-align:center;margin-top:14px">${esc(c.name)} is a friendly guide, not a therapist. In an emergency call 144, or 143 to talk.</p>`;
+  if (!S.chat) startFree(false);
+  const ch = S.chat, p = ch.pending;
+  const prog = ch.mode === "guided" && ch.total && p?.item ? `<div class="prog"><span>Question ${Math.min(ch.done + 1, ch.total)} of ${ch.total}</span><i style="--p:${Math.round(100 * ch.done / ch.total)}%"></i></div>` : "";
+  let answers = "";
+  if (!ch.typing && p) {
+    if (p.type === "chips") answers = `<div class="choices">${p.opts.map(([l], i) => `<button class="choice" data-act="ans" data-arg="${i}">${esc(l)}</button>`).join("")}</div>`;
+    if (p.type === "scale") answers = `<div class="choices scale6">${p.opts.map(([l], i) => `<button class="choice ${l.startsWith("Not sure") ? "soft" : ""}" data-act="ans" data-arg="${i}">${esc(l)}</button>`).join("")}</div>`;
+    if (p.type === "freq") answers = `<div class="choices">${p.opts.map(([l], i) => `<button class="choice ${/Not sure|rather not/.test(l) ? "soft" : ""}" data-act="ans" data-arg="${i}">${esc(l)}</button>`).join("")}</div>`;
+    if (p.type === "battery") answers = `<div class="battery">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<button data-act="ans" data-arg="${n}" aria-label="${n} of 10">${n}</button>`).join("")}</div><div class="face-labels"><span>🪫 Empty</span><span>Full 🔋</span></div>`;
+  }
+  return `<div class="top"><div class="row"><img src="${thumb(c.id, "happy", 120)}" alt="" style="width:48px;height:48px"><div><b>${esc(c.name)}</b><div class="tiny muted">${ch.mode === "guided" ? "Check-in · only you see your answers" : esc(c.trait)}</div></div></div>
+    ${ch.mode === "guided" ? `<button class="link small" data-act="endGuided">Stop</button>` : ""}</div>
+  ${prog}
+  <div class="msgs">${ch.msgs.map(m => m.me ? `<div class="msg me">${esc(m.text)}</div>` : `<div class="msgrow"><img src="${thumb(c.id, m.exp || "happy", 80)}" alt=""><div class="msg them">${esc(m.text)}</div></div>`).join("")}
+  ${ch.typing ? `<div class="msgrow"><img src="${thumb(c.id, "happy", 80)}" alt=""><div class="msg them typing"><i></i><i></i><i></i></div></div>` : ""}</div>
+  ${answers}
+  ${!ch.typing && ch.actions?.length ? `<div class="choices">${ch.actions.map(a => ({
+      hotline: `<a class="choice warm" href="tel:143">📞 Call 143 · La Main Tendue (24/7)</a>`,
+      hotline_soft: `<p class="tiny muted" style="text-align:center">If it ever gets heavy, 143 is there 24/7, anonymous.</p>`,
+      professional: `<button class="choice" data-act="available">See who's available now</button>`,
+      share: `<button class="choice" data-act="share">I'm ready to share my results</button>`,
+      quests: `<button class="choice" data-act="tab" data-arg="quests">Show me today's quests</button>`,
+      restart: `<button class="choice soft" data-act="restartChat">Back to start</button>`,
+    }[a] || "")).join("")}</div>` : ""}
+  <p class="tiny muted" style="text-align:center;margin-top:14px">${esc(c.name)} is a friendly guide, not a therapist, and this isn't a diagnosis. In an emergency call 144.</p>`;
 }
-function startChat() { S.chat = { msgs: [], choices: [], typing: false }; playNode("start"); }
-function playNode(id) {
-  const ctx = { companionId: S.s.companion, name: S.s.name, gentle: S.plan?.gentle };
-  const n = node(id, ctx);
-  if (n.mood) upsertDay(today(), { mood: n.mood }).then(() => allDays().then(d => { S.days = d; }));
-  S.chat.typing = true; S.chat.choices = []; render();
+
+// ---------- conversation engine ----------
+function say(lines, exp = "happy", then) {
+  S.chat.typing = true; S.chat.pending = null; S.chat.actions = null; render(); scrollEnd();
   let i = 0;
   const next = () => {
-    if (i >= n.say.length) { S.chat.typing = false; S.chat.choices = n.choices; render(); scrollEnd(); return; }
-    setTimeout(() => { S.chat.msgs.push({ text: n.say[i], exp: id === "stressed" || id === "while" ? "caring" : id === "good" ? "joy" : "happy" }); i++; render(); scrollEnd(); next(); }, 650);
+    if (i >= lines.length) { S.chat.typing = false; then && then(); render(); scrollEnd(); return; }
+    setTimeout(() => { S.chat.msgs.push({ text: lines[i], exp }); i++; render(); scrollEnd(); next(); }, Math.min(1400, 450 + lines[i].length * 12));
   };
   next();
+}
+function startFree(go = true) { S.chat = { mode: "free", msgs: [], pending: null }; if (go) freeNode("start"); }
+function freeNode(id) {
+  const n = FREE[id] || FREE.start;
+  say(n.say(S.s.name || "friend"), id === "low" || id === "persist" ? "caring" : id === "better" ? "joy" : "happy", () => { S.chat.pending = { type: "chips", opts: n.chips, free: true }; });
+}
+function bioFlags() {
+  const moved = new Set((S.result?.signals || []).filter(x => x.status === "shift" || x.status === "mild").map(x => x.key));
+  const has = (...k) => k.some(x => moved.has(x));
+  const flags = { sleep: has("sleepMin", "midpoint", "irregularity"), movement: has("steps", "exercise", "homeStay", "places", "rangeKm"), recovery: has("hrv", "restingHR"), mood: has("mood", "pleasure") };
+  return { flags, bioFlagged: S.stage >= 2 || (S.result?.signals || []).some(x => x.status === "shift") };
+}
+function startGuided(source) {
+  const { flags, bioFlagged } = bioFlags();
+  const ctx = { flags, bioFlagged, source, name: S.s.name };
+  const queue = planQuestions(ctx);
+  const prev = S.chat?.mode === "free" ? S.chat.msgs : [];
+  S.chat = { mode: "guided", msgs: prev, ctx, queue, answers: {}, done: 0, total: queue.length, extended: false };
+  S.tab = "chat"; S.sheet = null;
+  const areas = Object.entries(flags).filter(([, v]) => v).map(([k]) => ({ sleep: "sleep", movement: "activity", recovery: "energy", mood: "check-ins" }[k]));
+  const intro = source === "app"
+    ? [`Hey ${S.s.name || "you"} 💛 I noticed your ${areas.length ? areas.slice(0, 2).join(" and ") : "routine"} ${areas.length > 1 ? "have" : "has"} been a bit different lately.`, "Mind answering a few quick questions? It helps us see what could make things easier. \"Not sure\" is always a fine answer."]
+    : ["Let's do a quick check-in together.", "Five short questions, maybe a few more. There are no wrong answers, and \"not sure\" is always okay."];
+  window.scrollTo({ top: 0 });
+  say(intro, "caring", () => askNext());
+}
+function askNext() {
+  const ch = S.chat;
+  if (ch.done >= ch.queue.length) {
+    if (!ch.extended && extensionNeeded(ch.answers, ch.ctx)) {
+      ch.extended = true; const ext = extensionQuestions(ch.ctx); ch.queue.push(...ext); ch.total = ch.queue.length;
+    } else return finishGuided();
+  }
+  const item = ch.queue[ch.done];
+  const lines = [item.lead, item.q].filter(Boolean);
+  say(lines, "calm", () => { ch.pending = { type: item.kind === "scale" ? "scale" : item.kind, opts: item.opts, item }; });
+}
+function answer(idx) {
+  const ch = S.chat, p = ch.pending; if (!p) return;
+  if (p.free) { const [label, next] = p.opts[+idx]; ch.msgs.push({ me: true, text: label });
+    if (next === "CHECKIN") return startGuided("self");
+    if (next === "CHECKIN_SELF") return startGuided("self");
+    if (next === "BREATHE") { S.sheet = { type: "breathe" }; render(); runBreath(); ch.pending = { type: "chips", opts: FREE.better.chips, free: true }; return; }
+    if (next === "HELP") { ch.pending = null; say(["Of course. Reaching out is a strong step.", "Here's who you can talk to, some of them right now."], "caring", () => { ch.actions = ["professional", "hotline", "restart"]; }); return; }
+    return freeNode(next);
+  }
+  const item = p.item;
+  let label, value;
+  if (p.type === "battery") { const n = +idx; label = `${n}/10 🔋`; value = n >= 9 ? 5 : n >= 7 ? 4 : n >= 5 ? 3 : n >= 3 ? 2 : n === 2 ? 1 : 0; }
+  else { [label, value] = p.opts[+idx]; }
+  ch.msgs.push({ me: true, text: label });
+  const isFollow = !!p.follow;
+  if (value == null && !isFollow && item.unsure) { // not sure: ask it another way
+    say([ackFor(item, null, ch.done), item.unsure.q], "caring", () => { ch.pending = { type: item.unsure.kind || "chips", opts: item.unsure.opts, item, follow: true }; });
+    return;
+  }
+  ch.answers[item.id] = value;
+  ch.done++;
+  if (item.safety && value != null && value >= 1) return finishGuided();   // safety first, stop asking
+  say([ackFor(item, value, ch.done)], value != null && ((item.set === "who5" && value <= 1) || (item.set === "ext" && value >= 2)) ? "caring" : "happy", () => askNext());
+}
+async function finishGuided() {
+  const ch = S.chat;
+  const report = analyse(ch.answers, ch.ctx);
+  ch.report = report;
+  const reports = (await kv.get("reports")) || []; reports.unshift(report); await kv.set("reports", reports.slice(0, 20));
+  await kv.set("lastCheckin", today());
+  window.RYDM_lastReport = report;   // what the screening and referral modules read
+  const end = closing(report, ch.ctx);
+  say(end.say, report.outcome === "all_good" ? "joy" : "caring", () => { ch.pending = null; ch.actions = [...end.actions, "restart"]; ch.mode = "free"; });
 }
 const scrollEnd = () => requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
 
@@ -318,7 +423,7 @@ function onboarding() {
     () => `${back}<div style="height:200px" data-stage></div><div class="stack"><h1>Last step</h1><p class="muted small">${esc(c.name)} needs a few weeks to learn your usual rhythm. For the demo, pick a story:</p></div>
       <button class="card lrow" data-act="startDemo" data-arg="steady"><span class="ic">🌤️</span><span class="t"><b>A good rhythm</b><span>Steady weeks, quests and rewards</span></span>›</button>
       <button class="card lrow" data-act="startDemo" data-arg="shift"><span class="ic">🌙</span><span class="t"><b>A harder stretch</b><span>Sleep and movement slide for three weeks: see gentle mode</span></span>›</button>
-      <button class="card lrow" data-act="dataSheet"><span class="ic">🍎</span><span class="t"><b>Use my Apple Health data</b><span>Import your Health export, read on this phone</span></span>›</button>
+      <button class="card lrow" data-act="dataSheet"><span class="ic">🍎</span><span class="t"><b>Use my Apple Health data</b><span>${platform === "ios" ? "Connect live, read on this iPhone" : "Import your Health export, read on this phone"}</span></span>›</button>
       <button class="card lrow" data-act="startDemo" data-arg="fresh"><span class="ic">🌱</span><span class="t"><b>Start fresh</b><span>Begin today with check-ins</span></span>›</button>`,
   ];
   return `<div class="stack-lg">${dots}${V[st]()}</div>`;
@@ -338,7 +443,11 @@ function sheetHTML() {
     b = `<h2>Your data</h2>
     <div class="card stack small"><p><b>Now using:</b> ${esc(S.s.persona || "Nothing yet")}${isDemo ? ` <span class="demo-tag">Demo</span>` : ""}</p>
       ${n ? `<p class="muted">${n} days, ${esc(first)} to ${esc(last)}. Stored only on this phone.</p>` : ""}</div>
-    <div class="card stack"><h3>Use real Apple Health data</h3>
+    ${platform === "ios" ? `<div class="card stack"><h3>Connect Apple Health (live) 🍎</h3>
+      <p class="small muted">RYDM reads your Health data directly on this iPhone and keeps it up to date. Nothing leaves the phone. Notes arrive as real notifications.</p>
+      <button class="btn" data-act="liveHealth">${S.s.persona === "Apple Health (live)" ? "Sync now" : "Connect Apple Health"}</button>
+      <button class="btn ghost small" data-act="livePlaces">Also notice places and time at home</button></div>` : ""}
+    <div class="card stack"><h3>${platform === "ios" ? "Or import a Health export" : "Use real Apple Health data"}</h3>
       <p class="small muted">On the iPhone: Health app › your profile picture › <b>Export All Health Data</b>. Save the file, then choose it here. It's read on this phone; nothing is uploaded.</p>
       <label class="btn" style="position:relative">Choose export.zip or export.xml<input type="file" id="ah-file" accept=".zip,.xml,application/zip,text/xml" data-act="ahFile" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label>
       <p class="small" id="ah-status">${s.status ? esc(s.status) : ""}</p>
@@ -347,6 +456,9 @@ function sheetHTML() {
     ${n && !isDemo ? `<button class="btn ghost" data-act="removeDemo">Remove this data</button>` : ""}
     ${!n || !isDemo ? `<button class="btn ghost" data-act="demo">Load demo data instead</button>` : ""}`;
   }
+  if (s.type === "invite") b = `<div style="height:200px" data-stage></div><div class="stack" style="text-align:center"><h2>Hey ${esc(S.s.name || "you")}, can I check in? 💛</h2><p class="muted">Noticed you haven't been feeling quite yourself lately. Want to answer a few questions to see what could help? About two minutes.</p></div>
+    <button class="btn" data-act="startCheckin" data-arg="app">Sure, let's do it</button><button class="btn ghost" data-act="inviteLater">Remind me later</button><button class="link" data-act="inviteNo" style="justify-self:center">Not now</button>`;
+  if (s.type === "report") { const r = window.RYDM_lastReport; b = `<h2>Check-in report</h2><p class="small muted">What the screening and referral modules receive from the chat. Stored on this phone only. The user never sees a score.</p><pre style="white-space:pre-wrap;font:12px/1.45 ui-monospace,Menlo,monospace;background:var(--card);padding:12px;border-radius:14px;max-height:55vh;overflow:auto">${esc(r ? JSON.stringify(r, null, 2) : "No check-in yet.")}</pre>`; }
   if (s.type === "notes") b = `<h2>Notes from ${esc(c.name)}</h2>${S.nudges.length ? S.nudges.map(n => `<div class="card stack note-${n.kind}"><span class="tiny muted">${{ info: "Something changed", question: "A quick question", sustained: "Worth checking in", escalate: "Next step" }[n.kind]}</span><h3>${esc(n.title)}</h3><p class="small">${esc(n.body)}</p><div class="row wrap">${n.ctas.map(([l, a], i) => `<button class="btn ${i ? "ghost " : ""}small" data-act="cta" data-arg="${a}">${esc(l)}</button>`).join("")}</div></div>`).join("") : `<p class="muted">Nothing new. Your rhythm looks close to your usual. 🌿</p>`}
     <p class="tiny muted">Notes compare you only with your own usual pattern and general healthy ranges. They are not a diagnosis.</p>`;
   if (s.type === "available") b = availableHTML();
@@ -364,6 +476,8 @@ function sheetHTML() {
       ${isLoaded() ? `<p><b>It's on.</b></p>` : hasWebGPU() ? `<button class="btn" data-act="loadAI">Download and turn on</button><p class="tiny muted" id="aiprog"></p>` : `<p class="small">This device can't run it yet. ${esc(c.name)} will use its own lines.</p>`}`;
   if (s.type === "demo") b = `<h2>Demo controls</h2><button class="card lrow" data-act="startDemo" data-arg="steady"><span class="ic">🌤️</span><span class="t"><b>A good rhythm</b></span>›</button><button class="card lrow" data-act="startDemo" data-arg="shift"><span class="ic">🌙</span><span class="t"><b>A harder stretch (gentle mode)</b></span>›</button>
     <button class="card lrow" data-act="demoNote" data-arg="0"><span class="ic">🔔</span><span class="t"><b>Show the top notification</b><span>As it would arrive on the phone</span></span>›</button>
+    <button class="card lrow" data-act="startCheckin" data-arg="app"><span class="ic">💬</span><span class="t"><b>Start the check-in (as if from a notification)</b><span>Guided questions, based on the flagged data</span></span>›</button>
+    <button class="card lrow" data-act="showReport"><span class="ic">📄</span><span class="t"><b>Last check-in report</b><span>What the other modules receive</span></span>›</button>
     <button class="card lrow" data-act="skip2w"><span class="ic">⏩</span><span class="t"><b>Skip two weeks, no improvement</b><span>Shows the escalation step</span></span>›</button>`;
   if (s.type === "res") {
     const R = {
@@ -404,7 +518,13 @@ function render() {
 // ================= actions =================
 async function act(a, arg, el, ev) {
   switch (a) {
-    case "tab": S.tab = arg; S.sheet = null; if (arg === "chat" && !S.chat) startChat(); render(); window.scrollTo({ top: 0 }); break;
+    case "tab": S.tab = arg; S.sheet = null; if (arg === "chat" && (!S.chat || (!S.chat.pending && !S.chat.typing && !S.chat.actions))) startFree(); render(); window.scrollTo({ top: 0 }); break;
+    case "ans": answer(arg); break;
+    case "endGuided": S.chat.mode = "free"; S.chat.pending = null; say(["No problem at all. We can pick this up anytime 💛"], "caring", () => { S.chat.actions = ["restart"]; }); break;
+    case "startCheckin": startGuided(arg || "app"); break;
+    case "inviteLater": { await kv.set("inviteSnooze", addDays(today(), 1)); S.sheet = null; render(); toast("I'll ask again tomorrow"); break; }
+    case "inviteNo": { await kv.set("inviteSnooze", addDays(today(), 3)); S.sheet = null; render(); break; }
+    case "showReport": S.sheet = { type: "report" }; render(); break;
     case "tab-quests": S.tab = "quests"; render(); break;
     case "profile": S.tab = "profile"; render(); window.scrollTo({ top: 0 }); break;
     case "next": await save({ step: Math.min(5, (S.s.step || 0) + 1) }); render(); window.scrollTo({ top: 0 }); break;
@@ -416,7 +536,7 @@ async function act(a, arg, el, ev) {
     case "chooseInsurer": await save({ insurer: arg, insurerLinkedAt: new Date().toLocaleDateString("en-GB") }); if (S.s.onboarded) { S.sheet = null; toast("Insurer linked (demo)"); await refresh(); } else render(); break;
     case "linkInsurer": S.sheet = { type: "linkInsurer" }; render(); break;
     case "unlink": await save({ insurer: null, insurerLinkedAt: null }); toast("Insurer unlinked"); render(); break;
-    case "startDemo": await startDemo(arg); break;
+    case "startDemo": await kv.del("inviteSnooze"); await kv.del("lastCheckin"); await startDemo(arg); break;
     case "checkin": await upsertDay(today(), { mood: +arg }); if (mascot) mascot.react(+arg >= 4 ? "celebrate" : "tap"); await refresh(); break;
     case "pleasure": await upsertDay(today(), { pleasure: +arg }); if (mascot) mascot.react(+arg >= 4 ? "celebrate" : "tap"); await refresh(); toast("Thanks for checking in"); break;
     case "quest": {
@@ -425,10 +545,7 @@ async function act(a, arg, el, ev) {
       if (arg === "breathe" || arg === "g-breathe") { S.sheet = { type: "breathe", quest: arg }; render(); runBreath(); break; }
       await markDone(arg); break;
     }
-    case "say": S.chat.msgs.push({ me: true, text: el.dataset.label });
-      if (arg.startsWith("act:")) { const [, what, extra] = arg.split(":"); chatAction(what, extra); } else playNode(arg);
-      render(); break;
-    case "restartChat": startChat(); break;
+    case "restartChat": startFree(); break;
     case "journey": S.journey = arg; render(); break;
     case "res": if (arg === "breathe") { S.sheet = { type: "breathe" }; render(); runBreath(); } else { S.sheet = { type: "res", arg }; render(); } break;
     case "breathDone": { const q = S.sheet?.quest || (S.plan.ids.includes("breathe") ? "breathe" : S.plan.ids.includes("g-breathe") ? "g-breathe" : null); S.sheet = null; if (q) await markDone(q); else render(); break; }
@@ -440,6 +557,15 @@ async function act(a, arg, el, ev) {
     case "loadAI": { const p = document.getElementById("aiprog"); try { await loadModel("phone", x => { if (p) p.textContent = `Downloading… ${Math.round(x * 100)}%`; }); toast("AI is on"); S.sheet = null; await refresh(); } catch (e) { if (p) p.textContent = e.message; } break; }
     case "wipe": await wipeAll(); location.reload(); break;
     case "dataSheet": S.sheet = { type: "dataSheet" }; render(); break;
+    case "liveHealth": {
+      const r = await native.requestHealth(); await native.requestNotifications();
+      if (!r?.granted) { toast("Health access wasn't granted"); break; }
+      if (S.s.persona !== "Apple Health (live)") { await clearDays(); await setLog({}); await kv.set("gentleDays", []); await kv.set("plan", null); await kv.del("anchor"); await kv.del("stage3Since"); await kv.set("seenNudges", {}); }
+      await save({ persona: "Apple Health (live)", onboarded: true, consent: { ...S.s.consent, agreedAt: S.s.consent.agreedAt || new Date().toISOString(), steps: true, sleep: true, heart: true, daylight: true } });
+      S.sheet = null; S.tab = "home"; await refresh(); window.scrollTo({ top: 0 });
+      toast(`Synced ${S.days.length} days from Apple Health`); break;
+    }
+    case "livePlaces": { await native.requestLocation(); await save({ consent: { ...S.s.consent, places: true } }); toast("Places will build up from today"); break; }
     case "removeDemo": {
       await clearDays(); await setLog({}); await kv.set("gentleDays", []); await kv.set("plan", null);
       await kv.del("anchor"); await kv.del("stage3Since"); await kv.set("seenNudges", {});
@@ -464,7 +590,7 @@ async function act(a, arg, el, ev) {
     case "cta": {
       S.sheet = null;
       if (arg === "journey" || arg === "quests") { S.tab = arg; render(); window.scrollTo({ top: 0 }); }
-      else if (arg === "checkin") { S.tab = "home"; render(); document.querySelector(".faces")?.scrollIntoView({ block: "center", behavior: "smooth" }); }
+      else if (arg === "checkin") { startGuided("app"); }
       else if (arg === "share") { S.sheet = { type: "share" }; render(); }
       else if (arg === "available") { S.sheet = { type: "available" }; render(); }
       else render();
@@ -472,7 +598,7 @@ async function act(a, arg, el, ev) {
     }
     case "available": S.sheet = { type: "available" }; render(); break;
     case "skip2w": { const sinceD = addDays(today(), -15); await kv.set("stage3Since", sinceD); S.sheet = null; S.tab = "home"; await kv.set("seenNudges", {}); await refresh(); toast("Jumped two weeks ahead, no improvement"); break; }
-    case "demoNote": { S.sheet = null; render(); const n = S.nudges[+arg] || S.nudges[0]; if (n) showBanner(n); else toast("No notes right now"); break; }
+    case "demoNote": { S.sheet = null; render(); const n = S.nudges[+arg] || S.nudges[0]; if (n) { showBanner(n); if (isNative) native.notify(n.title, n.body, "demo" + Date.now()); } else toast("No notes right now"); break; }
     case "close": S.sheet = null; host.style.transform = ""; render(); break;
     case "scrim": if (ev.target === el) { S.sheet = null; render(); } break;
   }
@@ -484,13 +610,6 @@ async function markDone(id) {
   S.sheet = { type: "celebrate", active: after && !before };
   await refresh();
   mascot?.react("celebrate");
-}
-function chatAction(what, extra) {
-  if (what === "breathe") { S.sheet = { type: "breathe" }; render(); runBreath(); return; }
-  if (what === "quests") { S.tab = "quests"; S.sheet = null; render(); return; }
-  if (what === "quest") { S.chat.msgs.push({ text: `Added! "${quest(extra)?.title}" is on your list.`, exp: "joy" }); if (!S.plan.ids.includes(extra)) { S.plan.ids.push(extra); kv.set("plan", S.plan); } S.chat.choices = [["Thanks!", "end"]]; render(); return; }
-  if (what === "trusted") { S.sheet = { type: "share" }; render(); return; }
-  if (what === "support") { S.tab = "support"; S.sheet = null; render(); return; }
 }
 let breathTimer = null;
 function runBreath() {
@@ -542,4 +661,5 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && S.sheet) {
   document.body.classList.toggle("night", hour() >= 20 || hour() < 6);
   if (S.s.onboarded) await refresh(); else render();
   setInterval(() => { if (S.s.onboarded && !S.sheet) refresh(); }, 5 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.s.onboarded && !S.sheet) refresh(); });
 })();

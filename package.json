@@ -1,0 +1,12 @@
+{
+  "name": "rydm",
+  "version": "0.3.0",
+  "private": true,
+  "scripts": {
+    "build:web": "node scripts/build-web.js",
+    "ios:sync": "npm run build:web && npx cap sync ios",
+    "serve": "node serve.js 5190"
+  },
+  "dependencies": { "@capacitor/core": "8.5.2", "@capacitor/ios": "8.5.2" },
+  "devDependencies": { "@capacitor/cli": "8.5.2" }
+}

@@ -41,6 +41,39 @@ Open http://localhost:5190 at phone width. No build step.
 - Heart-rate notes never show bpm, to avoid health anxiety.
 - "Who's available now" lists 143, 147, your GP (office hours only), FSP Psyfinder, the AGPsy directory and HUG emergencies.
 
+## Check-in chatbot (js/bot.js)
+
+The chatbot collects what sensors can't, and hands the screening modules a structured report. It is a wellbeing check, never shown to the user as a score.
+
+**Track A: the user opens chat.**
+- Chips: "Just exploring" (loops back to the start), "Something's on my mind", "Can't sleep well", "Feeling stressed", "Feeling low", "Quick check-in".
+- Problem paths go: acknowledge, then a small idea, then offer a check-in, then helplines if it persists.
+
+**Track B: the data suggests a check-in.**
+- A notification or pop-up ("Noticed you haven't been feeling quite yourself lately. Want to answer a few questions to see what could help?") opens a guided check-in.
+- The guided check-in starts from the areas the data flagged.
+
+**Questions**
+- Core is the **WHO-5 Wellbeing Index**: 5 positively worded items about mood, calm, energy, waking rested and interest.
+- If WHO-5 is low or the data flagged something, **PHQ-9 style items** follow for the DSM-5 areas nobody can track: low mood, appetite, slowed/restless (only if movement was flagged), self-worth, concentration, and thoughts of death.
+- A progress counter shows the questions ("Question 3 of 5", growing to about 11 only when needed).
+- Answer formats vary: 6-step frequency, a 1-10 energy battery, colour/weather chips, "I slept enough but I'm not rested".
+- **"Not sure" is always allowed.** It is recorded as unknown and followed by a simpler, concrete question.
+
+**Analysis**
+- The nine DSM-5 symptoms are each marked met / not met / unknown, from chat, data, or both.
+- A symptom from data counts only if the chat supports it.
+- "Indicators met" follows the DSM rule: 5 of 9, including low mood or loss of interest.
+
+**Outcomes**
+- **Safety:** any sign of thoughts of death gives 143 and help immediately.
+- **Data bad + chat bad:** hotline and referral.
+- **Came on their own + chat bad:** suggest a psychologist.
+- **Chat fine + data bad:** practical fixes.
+- **All fine:** encouragement.
+
+**Report:** `window.RYDM_lastReport`, also saved locally. Profile › Demo controls › Last check-in report shows it.
+
 ## Rules that make it fair and legal
 
 - **Rewards follow effort, not outcomes.** In gentle mode (a rhythm shift has lasted about two weeks), one small quest makes the day count fully. Nobody loses a reward for having a hard month.

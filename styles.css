@@ -179,3 +179,15 @@ input[type=text]{font:16px var(--font);color:var(--ink);background:var(--card);b
 .pill.on{background:var(--green-soft);color:var(--good)}
 .note-sustained,.note-escalate{background:var(--peach)}
 .note-question{background:var(--lav)}
+
+/* check-in chat */
+.prog{display:grid;gap:6px;margin:-2px 0 12px;font-size:12.5px;font-weight:800;color:var(--muted)}
+.prog i{display:block;height:6px;border-radius:3px;background:linear-gradient(90deg,var(--green) var(--p),var(--green-soft) var(--p))}
+.choice.soft{background:var(--bg2);color:var(--muted)}
+.choice.warm{background:var(--peach);color:#8A3F1C;text-decoration:none}
+body.night .choice.warm{color:#FFC7A8}
+.scale6{grid-template-columns:1fr 1fr}
+.scale6 .choice{padding:11px 10px;font-size:14px}
+.battery{display:grid;grid-template-columns:repeat(10,1fr);gap:5px}
+.battery button{border:0;border-radius:10px;padding:12px 0;font-weight:800;background:var(--lav);color:var(--lav-ink);cursor:pointer}
+a.choice{display:block;text-align:center}

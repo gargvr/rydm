@@ -63,11 +63,11 @@ export function buildNudges(result, stage, ctx) {
     ctas: [["See who's available now", "available"], ["I'm ready to share my results", "share"]] });
   if (stage >= 3) out.push({ kind: "sustained", title: "We've noticed a sustained change in your routine",
     body: `Your ${listAreas(moved)} have been different from your usual for the past ${Math.max(8, ctx.shiftDays || 8)} days. This doesn't tell us why, but it may be worth checking in.`,
-    ctas: [["I'm ready to share my results", "share"], ["Review with a professional", "available"]] });
+    ctas: [["Answer a few questions", "checkin"], ["I'm ready to share my results", "share"], ["Review with a professional", "available"]] });
   if (stage >= 2) {
     const top = moved.find(s => s.status === "shift");
     const i = top && info(top, days);
-    if (i) out.push({ kind: "question", title: i.title, body: `${i.body} How have you been feeling lately?`, ctas: [["Quick check-in", "checkin"], ["I'm fine, thanks", "dismiss"]] });
+    if (i) out.push({ kind: "question", title: "How have you been lately?", body: `${i.body} Noticed you haven't been feeling quite yourself. Want to answer a few questions to see what could help?`, ctas: [["Answer a few questions", "checkin"], ["I'm fine, thanks", "dismiss"]] });
   }
   for (const n of result.norms || []) out.push({ kind: "info", title: n.key === "sleepMin" ? "About your sleep" : n.key === "steps" ? "About your movement" : "About your check-ins", body: n.text + (n.key === "sleepMin" ? " You could try winding down 30 minutes earlier." : n.key === "steps" ? " A short walk could be a nice start." : ""), ctas: [["See quests", "quests"]] });
   const normKeys = new Set((result.norms || []).map(n => n.key));
