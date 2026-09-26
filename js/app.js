@@ -14,6 +14,7 @@ import { hasWebGPU, loadModel, isLoaded, getEngine } from "./slm.js";
 const $app = document.getElementById("app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const today = () => isoDate(new Date());
+const SPEED = Math.max(0.5, Math.min(4, +new URLSearchParams(location.search).get("speed") || 1)); // demo recordings only
 const hour = () => new Date().getHours();
 
 const DEFAULTS = {
@@ -256,7 +257,7 @@ function say(lines, exp = "happy", then) {
   let i = 0;
   const next = () => {
     if (i >= lines.length) { S.chat.typing = false; then && then(); render(); scrollEnd(); return; }
-    setTimeout(() => { S.chat.msgs.push({ text: lines[i], exp }); i++; render(); scrollEnd(); next(); }, Math.min(1400, 450 + lines[i].length * 12));
+    setTimeout(() => { S.chat.msgs.push({ text: lines[i], exp }); i++; render(); scrollEnd(); next(); }, Math.min(1400, 450 + lines[i].length * 12) / SPEED);
   };
   next();
 }
