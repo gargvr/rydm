@@ -15,7 +15,8 @@ const $app = document.getElementById("app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const today = () => isoDate(new Date());
 const SPEED = Math.max(0.5, Math.min(4, +new URLSearchParams(location.search).get("speed") || 1)); // demo recordings only
-const hour = () => new Date().getHours();
+const HOUR = new URLSearchParams(location.search).get("hour"); // demo recordings only
+const hour = () => (HOUR != null && HOUR !== "" ? +HOUR : new Date().getHours());
 
 const DEFAULTS = {
   onboarded: false, step: 0, name: "", companion: "pip",
