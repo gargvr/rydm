@@ -43,7 +43,7 @@ export function decide(ctx) {
   else if (planned.length && doneToday.length >= planned.length) s = "allDone";
   else if (hour >= 23 || hour < 5) s = "lateNight";
   else if (hour >= 19) s = "evening";
-  else if (moved.has("sleepMin") || moved.has("onset")) s = "shortSleep";
+  else if (moved.has("sleepMin") || moved.has("midpoint") || moved.has("irregularity")) s = "shortSleep";
   else if (moved.has("homeStay") || moved.has("places") || moved.has("rangeKm")) s = "homeBound";
   else if (moved.has("steps") || moved.has("exercise")) s = "lowMove";
   else if (checkin >= 4) s = "checkinGood";

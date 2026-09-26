@@ -17,14 +17,14 @@ export const PERSONAS = {
 export function generate(persona = "shift", nDays = 63, endDate = isoDate(new Date())) {
   const r = rng(persona === "shift" ? 42 : 7);
   const start = addDays(endDate, -(nDays - 1));
-  const driftStart = nDays - 21;
+  const driftStart = nDays - 18;
   const out = [];
   for (let i = 0; i < nDays; i++) {
     const date = addDays(start, i);
     const dow = new Date(date + "T12:00:00").getDay();
     const weekend = dow === 0 || dow === 6;
     // drift progress 0 -> 1 over the last three weeks (only for the shift persona)
-    const p = persona === "shift" && i >= driftStart ? Math.min(1, (i - driftStart + 1) / 12) : 0;
+    const p = persona === "shift" && i >= driftStart ? Math.min(1, (i - driftStart + 1) / 7) : 0;
 
     const onset = 680 + (weekend ? 35 : 0) + p * 85 + gauss(r) * (18 + p * 32);      // 23:20 -> ~00:45, noisier
     const sleepMin = 445 + (weekend ? 30 : 0) - p * 70 + gauss(r) * (24 + p * 10);    // 7h25 -> ~6h15
@@ -34,10 +34,10 @@ export function generate(persona = "shift", nDays = 63, endDate = isoDate(new Da
     const rangeKm = Math.round(clamp((weekend ? 8 : 6) * (1 - p * 0.6) + gauss(r) * 1.1, 0.3, 40) * 10) / 10;
     const checked = r() < 0.82;
     const mood = checked ? Math.round(clamp(3.8 - p * 1.5 + gauss(r) * 0.6, 1, 5)) : undefined;
-    const energy = checked ? Math.round(clamp(3.7 - p * 2 + gauss(r) * 0.55, 1, 5)) : undefined;
+    const pleasure = checked ? Math.round(clamp(3.7 - p * 2 + gauss(r) * 0.55, 1, 5)) : undefined;
 
     const day = { date, onset: Math.round(onset), sleepMin: Math.round(sleepMin), steps: Math.max(300, Math.round(steps)), places, homeStay, rangeKm, source: "demo" };
-    if (mood) { day.mood = mood; day.energy = energy; }
+    if (mood) { day.mood = mood; day.pleasure = pleasure; }
     if (persona === "steady" && i >= 30 && i <= 33) day.tags = ["travel"];
     if (persona === "shift" && i === 12) day.tags = ["ill"];
     out.push(day);

@@ -6,6 +6,7 @@ import { createMascot, renderThumbnail } from "./mascot3d.js";
 import { ALL, quest, planToday, getLog, setLog, complete, isActiveDay, monthStats, streak, insurerView, demoLog, INSURERS, RULES } from "./quests.js";
 import { decide, directWithModel } from "./director.js";
 import { node } from "./chat.js";
+import { stageOf, buildNudges, availableNow, daysBetween } from "./nudges.js";
 import { hasWebGPU, loadModel, isLoaded, getEngine } from "./slm.js";
 
 const $app = document.getElementById("app");
@@ -18,7 +19,7 @@ const DEFAULTS = {
   consent: { steps: true, sleep: true, heart: false, daylight: true, places: false, checkin: true, agreedAt: null },
   insurer: null, insurerLinkedAt: null, trusted: { name: "", contact: "" }, persona: null,
 };
-const S = { s: null, days: [], result: null, log: {}, plan: null, gentleDays: new Set(), dir: null, tab: "home", sheet: null, chat: null, journey: "week", thumbs: {}, busy: false };
+const S = { nudges: [], stage: 0, banner: null, s: null, days: [], result: null, log: {}, plan: null, gentleDays: new Set(), dir: null, tab: "home", sheet: null, chat: null, journey: "week", thumbs: {}, busy: false };
 
 // ---------- one persistent 3D companion, moved between screens ----------
 const host = document.createElement("div"); host.style.cssText = "width:100%;height:100%";
@@ -38,7 +39,19 @@ const sources = () => ["steps", "sleep", "heart", "daylight", "places", "checkin
 
 async function refresh() {
   S.days = await allDays();
-  S.result = analyze(S.days, sources());
+  let anchor = await kv.get("anchor");
+  S.result = analyze(S.days, sources(), { anchor });
+  // Freeze the baseline while a change lasts, so a slow slide can't become the new "usual".
+  if (!S.result.learning) {
+    if (S.result.level >= 1 && !anchor) { anchor = S.result.window?.baseTo; await kv.set("anchor", anchor); }
+    if (S.result.level === 0 && anchor) { anchor = null; await kv.del("anchor"); S.result = analyze(S.days, sources()); }
+  }
+  let since = await kv.get("stage3Since");
+  S.stage = stageOf(S.result, since, today());
+  if (S.stage >= 3 && !since) { since = today(); await kv.set("stage3Since", since); }
+  if (S.stage < 3 && since) { since = null; await kv.del("stage3Since"); }
+  S.stage = stageOf(S.result, since, today());
+  S.nudges = buildNudges(S.result, S.stage, { shiftDays: shiftDays() });
   S.log = await getLog();
   S.gentleDays = new Set((await kv.get("gentleDays")) || []);
   const td = S.days.find(d => d.date === today()) || {};
@@ -59,6 +72,22 @@ async function refresh() {
   if (isLoaded()) directWithModel(getEngine(), { hour: hour(), companionId: S.s.companion }, rule).then(d => { S.dir = d; applyDirector(); });
   document.body.classList.toggle("night", hour() >= 20 || hour() < 6);
   render();
+  maybeBanner();
+}
+function shiftDays() { const off = S.result?.signals?.filter(x => x.status === "shift").map(x => x.offDays || 0) || []; return off.length ? Math.max(...off) : 0; }
+async function maybeBanner() {
+  const top = S.nudges[0]; if (!top || S.sheet) return;
+  const seen = (await kv.get("seenNudges")) || {}, key = `${today()}:${top.kind}:${top.title}`;
+  if (seen[key]) return;
+  seen[key] = 1; await kv.set("seenNudges", seen);
+  showBanner(top);
+}
+function showBanner(n) {
+  document.querySelector(".banner")?.remove();
+  const el = document.createElement("button"); el.className = "banner"; el.setAttribute("data-act", "openNotes");
+  el.innerHTML = `<img src="${thumb(S.s.companion, "caring", 80)}" alt=""><span><span class="bh"><b>RYDM</b><span>now</span></span><b>${esc(n.title)}</b><span class="bb">${esc(n.body)}</span></span>`;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add("out"), 6500); setTimeout(() => el.remove(), 7000);
 }
 function applyDirector() {
   if (!mascot || !S.dir) return;
@@ -76,7 +105,8 @@ const NAV = [["home", "🏠", "Home"], ["quests", "⭐", "Quests"], ["chat", "�
 function nav() { return `<nav class="nav" aria-label="Main"><div>${NAV.map(([id, i, l]) => `<button data-act="tab" data-arg="${id}" ${S.tab === id ? 'aria-current="page"' : ""}><span class="i">${i}</span>${l}</button>`).join("")}</div></nav>`; }
 function header(title, sub) {
   return `<div class="top"><div><div class="hello">${title}</div>${sub ? `<p class="muted small">${sub}</p>` : ""}</div>
-    <button class="avatar" data-act="profile" aria-label="Your profile"><img alt="" src="${thumb(S.s.companion, "happy", 120)}"></button></div>`;
+    <div class="row" style="gap:8px"><button class="bell" data-act="openNotes" aria-label="Notifications">🔔${S.nudges.length ? `<i>${S.nudges.length}</i>` : ""}</button>
+    <button class="avatar" data-act="profile" aria-label="Your profile"><img alt="" src="${thumb(S.s.companion, "happy", 120)}"></button></div></div>`;
 }
 function spark(vals, color = "var(--lav-ink)") {
   const v = vals.map(x => (typeof x === "number" ? x : null)); const nums = v.filter(x => x != null);
@@ -94,7 +124,7 @@ function home() {
   const st = streak(S.log, today(), S.gentleDays), ms = monthStats(S.log, month(), S.gentleDays);
   const qs = S.plan.ids.map(quest).filter(Boolean);
   const r = S.result;
-  const reach = S.dir?.scenario === "reachOut";
+  const n3 = S.nudges.find(n => n.kind === "escalate") || S.nudges.find(n => n.kind === "sustained");
   return `${header(`${greet()},<br>${esc(S.s.name || "friend")} ${hour() >= 20 || hour() < 6 ? "🌙" : "☀️"}`)}
   <div class="stack-lg">
     <div class="scene"><div class="sun"></div><div class="bubble">${esc(S.dir?.line || "")}</div><div class="stage" data-stage></div>
@@ -109,6 +139,9 @@ function home() {
       <p class="small muted">How are you feeling today?</p>
       <div class="faces">${["😣", "😕", "😐", "🙂", "😄"].map((f, i) => `<button class="face" data-act="checkin" data-arg="${i + 1}" aria-pressed="${td.mood === i + 1}" aria-label="Mood ${i + 1} of 5">${f}</button>`).join("")}</div>
       <div class="face-labels"><span>Very low</span><span>Very good</span></div>
+      ${td.mood ? `<p class="small muted" style="margin-top:6px">And how much did you enjoy things today?</p>
+      <div class="faces">${["🌧️", "🌥️", "⛅", "🌤️", "🌈"].map((f, i) => `<button class="face" data-act="pleasure" data-arg="${i + 1}" aria-pressed="${td.pleasure === i + 1}" aria-label="Enjoyment ${i + 1} of 5">${f}</button>`).join("")}</div>
+      <div class="face-labels"><span>Not at all</span><span>A lot</span></div>` : ""}
     </div>
 
     <div class="stack">
@@ -116,8 +149,8 @@ function home() {
       ${qs.map(q => questRow(q, done.includes(q.id))).join("")}
     </div>
 
-    ${reach ? `<div class="card stack" style="background:var(--peach)"><h3>You don't have to carry it alone 💛</h3><p class="small">A few things have felt different for a couple of weeks. Talking to someone can really help, whenever you're ready.</p>
-      <div class="row"><button class="btn small" data-act="share">Message ${esc(S.s.trusted.name || "someone I trust")}</button><button class="btn ghost small" data-act="tab" data-arg="support">See options</button></div></div>` : ""}
+    ${n3 ? `<div class="card stack" style="background:var(--peach)"><h3>${esc(n3.title)}</h3><p class="small">${esc(n3.body)}</p>
+      <div class="row wrap">${n3.ctas.map(([l, a], i) => `<button class="btn ${i ? "ghost " : ""}small" data-act="cta" data-arg="${a}">${esc(l)}</button>`).join("")}</div></div>` : ""}
 
     <div class="stack"><h2>Your rhythm this week</h2>
       <div class="tiles">
@@ -234,6 +267,7 @@ function support() {
     <div class="card stack"><h3>Someone in your corner</h3>
       <p class="small muted">${S.s.trusted.name ? `${esc(S.s.trusted.name)} is your trusted person. They only hear from you if you choose.` : "Add someone you trust. RYDM never contacts them for you."}</p>
       <div class="row"><button class="btn small" data-act="share">Share how I'm doing</button><button class="btn ghost small" data-act="trusted">${S.s.trusted.name ? "Change" : "Add person"}</button></div></div>
+    <button class="card lrow" data-act="available"><span class="ic">🟢</span><span class="t"><b>Who's available now</b><span>Helplines, your GP, psychologists near you</span></span>›</button>
     <div class="card stack" style="background:var(--peach)"><h3>Talk to someone now</h3>
       <p class="small">Free and confidential, any time.</p>
       <div class="row wrap"><a class="btn small" href="tel:143" style="text-decoration:none">143 · La Main Tendue</a><a class="btn ghost small" href="tel:144" style="text-decoration:none">144 Emergency</a></div>
@@ -296,6 +330,9 @@ function sheetHTML() {
   if (s.type === "celebrate") b = `<div style="height:240px" data-stage></div><div class="stack" style="text-align:center"><h2>${esc(c.cheer)}</h2><p class="muted">+${RULES.pointsPerQuest} points${s.active ? ` · Active day! +${RULES.dayBonus} bonus` : ""}</p><button class="btn" data-act="close">Yay!</button></div>`;
   if (s.type === "breathe") b = `<h2 style="text-align:center">Breathe with ${esc(c.name)}</h2><div class="breath-stage" data-stage></div><p class="breath-label" id="blabel">Get comfy</p><p class="small muted" style="text-align:center">In 4 · hold 4 · out 4 · hold 4</p><button class="btn ghost" data-act="breathDone">Done</button>`;
   if (s.type === "chat") b = `<div class="stack">${chat()}</div>`;
+  if (s.type === "notes") b = `<h2>Notes from ${esc(c.name)}</h2>${S.nudges.length ? S.nudges.map(n => `<div class="card stack note-${n.kind}"><span class="tiny muted">${{ info: "Something changed", question: "A quick question", sustained: "Worth checking in", escalate: "Next step" }[n.kind]}</span><h3>${esc(n.title)}</h3><p class="small">${esc(n.body)}</p><div class="row wrap">${n.ctas.map(([l, a], i) => `<button class="btn ${i ? "ghost " : ""}small" data-act="cta" data-arg="${a}">${esc(l)}</button>`).join("")}</div></div>`).join("") : `<p class="muted">Nothing new. Your rhythm looks close to your usual. 🌿</p>`}
+    <p class="tiny muted">Notes compare you only with your own usual pattern and general healthy ranges. They are not a diagnosis.</p>`;
+  if (s.type === "available") b = availableHTML();
   if (s.type === "linkInsurer") b = `<h2>Link your insurer</h2><div class="card">${INSURERS.map(i => `<button class="lrow" data-act="chooseInsurer" data-arg="${i.id}"><span class="ic" style="font-size:12px;font-weight:900;color:#2B5C8A;background:var(--sky)">${esc(i.name.slice(0, 4).toUpperCase())}</span><span class="t"><b>${esc(i.name)}</b></span>›</button>`).join("")}</div><p class="tiny muted">Demo. No real connection is made and nothing is sent.</p>`;
   if (s.type === "changeCompanion") b = `<h2>Choose your companion</h2><div class="pick">${COMPANIONS.map(x => `<button data-act="pickCompanion" data-arg="${x.id}" aria-pressed="${x.id === c.id}"><img src="${thumb(x.id, "happy", 176)}" alt=""><b>${x.name}</b><span>${x.trait}</span></button>`).join("")}</div><button class="btn" data-act="close">Done</button>`;
   if (s.type === "trusted") b = `<h2>Your trusted person</h2><p class="small muted">Someone who'd walk beside you. They never hear from RYDM, only from you.</p><input type="text" id="f-tname" placeholder="Their name" value="${esc(S.s.trusted.name)}"><input type="text" id="f-tcontact" placeholder="How you reach them (optional)" value="${esc(S.s.trusted.contact)}"><button class="btn" data-act="saveTrusted">Save</button>`;
@@ -308,18 +345,26 @@ function sheetHTML() {
       <button class="btn ghost" data-act="wipe">Delete everything</button>`;
   if (s.type === "ai") b = `<h2>On-device AI ✨</h2><p class="small muted">Let a small AI model on your phone help ${esc(c.name)} react to your day in its own words. About 880 MB, downloaded once, Wi-Fi recommended. It only sees words like "short sleep" or "quest done", never your data.</p>
       ${isLoaded() ? `<p><b>It's on.</b></p>` : hasWebGPU() ? `<button class="btn" data-act="loadAI">Download and turn on</button><p class="tiny muted" id="aiprog"></p>` : `<p class="small">This device can't run it yet. ${esc(c.name)} will use its own lines.</p>`}`;
-  if (s.type === "demo") b = `<h2>Demo data</h2><button class="card lrow" data-act="startDemo" data-arg="steady"><span class="ic">🌤️</span><span class="t"><b>A good rhythm</b></span>›</button><button class="card lrow" data-act="startDemo" data-arg="shift"><span class="ic">🌙</span><span class="t"><b>A harder stretch (gentle mode)</b></span>›</button>`;
+  if (s.type === "demo") b = `<h2>Demo controls</h2><button class="card lrow" data-act="startDemo" data-arg="steady"><span class="ic">🌤️</span><span class="t"><b>A good rhythm</b></span>›</button><button class="card lrow" data-act="startDemo" data-arg="shift"><span class="ic">🌙</span><span class="t"><b>A harder stretch (gentle mode)</b></span>›</button>
+    <button class="card lrow" data-act="demoNote" data-arg="0"><span class="ic">🔔</span><span class="t"><b>Show the top notification</b><span>As it would arrive on the phone</span></span>›</button>
+    <button class="card lrow" data-act="skip2w"><span class="ic">⏩</span><span class="t"><b>Skip two weeks, no improvement</b><span>Shows the escalation step</span></span>›</button>`;
   if (s.type === "res") {
     const R = {
       sleepTips: ["Tips for better sleep", ["Get daylight within an hour of waking.", "Keep wake-up time steady, even on weekends.", "Screens away 30 minutes before bed.", "Cool, dark, quiet room.", "Can't sleep after 20 minutes? Get up, do something calm, try again."]],
       workTips: ["Managing work stress", ["Write tomorrow's top 3 before you log off.", "Protect one focus block a day.", "Take a real lunch away from the screen.", "Say what's too much, early. It's a skill, not a weakness."]],
       focus: ["Focus", ["One task, 25 minutes, phone in another room.", "A 5-minute walk resets attention.", "Water and daylight help more than another coffee."]],
       moodTips: ["Lifting your mood", ["Do one small thing you used to enjoy.", "Message someone, even just an emoji.", "Get outside, even briefly.", "Notice one good moment before bed."]],
-      pro: ["When to talk to a professional", ["If low mood, stress or exhaustion lasts more than two weeks.", "If sleep, appetite or energy change a lot.", "If daily life feels hard to manage.", "In Switzerland, your GP can prescribe sessions with a psychologist, covered by basic insurance since July 2022.", "In Geneva, the AGPsy directory lists psychologists: agpsy.ch"]],
+      pro: ["When to talk to a professional", ["If low mood, stress or exhaustion lasts more than two weeks.", "If sleep, appetite or energy change a lot.", "If daily life feels hard to manage.", "In Switzerland, your GP can prescribe sessions with a psychologist, covered by basic insurance since July 2022.", "Psyfinder by the Swiss psychologists' federation (FSP) has profiles of psychologists near you.", "In Geneva, the AGPsy directory lists psychologists: agpsy.ch"]],
     }[s.arg] || ["", []];
-    b = `<h2>${R[0]}</h2><div class="card stack small">${R[1].map(x => `<p>• ${esc(x)}</p>`).join("")}</div>${s.arg === "pro" ? `<a class="btn" href="https://www.agpsy.ch/members/search" target="_blank" rel="noopener" style="text-decoration:none">Find a psychologist</a>` : ""}`;
+    b = `<h2>${R[0]}</h2><div class="card stack small">${R[1].map(x => `<p>• ${esc(x)}</p>`).join("")}</div>${s.arg === "pro" ? `<a class="btn" href="https://www.psychologie.ch/en/psyfinder" target="_blank" rel="noopener" style="text-decoration:none">Find a psychologist (Psyfinder)</a>` : ""}`;
   }
   return `<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div><div class="stack-lg">${b}</div></div></div>`;
+}
+function availableHTML() {
+  return `<h2>Who's available now</h2><p class="small muted">You choose who, and when. RYDM never contacts anyone for you.</p>
+  ${availableNow().map(a => `<div class="card stack" style="gap:6px"><div class="row between"><b>${esc(a.name)}</b><span class="pill ${a.now ? "on" : ""}">${a.now ? "Available now" : a.when}</span></div><p class="small muted">${esc(a.what)}${a.when === "24/7" ? " · 24/7" : ""}</p>
+    <div class="row wrap">${a.tel ? `<a class="btn small" href="tel:${a.tel}" style="text-decoration:none">Call ${esc(a.telLabel || a.tel)}</a>` : ""}${a.web ? `<a class="btn ghost small" href="${a.web}" target="_blank" rel="noopener" style="text-decoration:none">Open</a>` : ""}</div></div>`).join("")}
+  <button class="btn ghost" data-act="share">I'm ready to share my results</button>`;
 }
 function shareText() {
   const r = S.result;
@@ -355,7 +400,8 @@ async function act(a, arg, el, ev) {
     case "linkInsurer": S.sheet = { type: "linkInsurer" }; render(); break;
     case "unlink": await save({ insurer: null, insurerLinkedAt: null }); toast("Insurer unlinked"); render(); break;
     case "startDemo": await startDemo(arg); break;
-    case "checkin": await upsertDay(today(), { mood: +arg }); if (mascot) mascot.react(+arg >= 4 ? "celebrate" : "tap"); await refresh(); toast("Thanks for checking in"); break;
+    case "checkin": await upsertDay(today(), { mood: +arg }); if (mascot) mascot.react(+arg >= 4 ? "celebrate" : "tap"); await refresh(); break;
+    case "pleasure": await upsertDay(today(), { pleasure: +arg }); if (mascot) mascot.react(+arg >= 4 ? "celebrate" : "tap"); await refresh(); toast("Thanks for checking in"); break;
     case "quest": {
       const done = (S.log[today()] || []).includes(arg);
       if (done) break;
@@ -376,6 +422,19 @@ async function act(a, arg, el, ev) {
     case "changeCompanion": case "privacy": case "ai": case "demo": S.sheet = { type: a }; render(); break;
     case "loadAI": { const p = document.getElementById("aiprog"); try { await loadModel("phone", x => { if (p) p.textContent = `Downloading… ${Math.round(x * 100)}%`; }); toast("AI is on"); S.sheet = null; await refresh(); } catch (e) { if (p) p.textContent = e.message; } break; }
     case "wipe": await wipeAll(); location.reload(); break;
+    case "openNotes": document.querySelector(".banner")?.remove(); S.sheet = { type: "notes" }; render(); break;
+    case "cta": {
+      S.sheet = null;
+      if (arg === "journey" || arg === "quests") { S.tab = arg; render(); window.scrollTo({ top: 0 }); }
+      else if (arg === "checkin") { S.tab = "home"; render(); document.querySelector(".faces")?.scrollIntoView({ block: "center", behavior: "smooth" }); }
+      else if (arg === "share") { S.sheet = { type: "share" }; render(); }
+      else if (arg === "available") { S.sheet = { type: "available" }; render(); }
+      else render();
+      break;
+    }
+    case "available": S.sheet = { type: "available" }; render(); break;
+    case "skip2w": { const sinceD = addDays(today(), -15); await kv.set("stage3Since", sinceD); S.sheet = null; S.tab = "home"; await kv.set("seenNudges", {}); await refresh(); toast("Jumped two weeks ahead, no improvement"); break; }
+    case "demoNote": { S.sheet = null; render(); const n = S.nudges[+arg] || S.nudges[0]; if (n) showBanner(n); else toast("No notes right now"); break; }
     case "close": S.sheet = null; host.style.transform = ""; render(); break;
     case "scrim": if (ev.target === el) { S.sheet = null; render(); } break;
   }
@@ -428,7 +487,7 @@ async function startDemo(kind) {
     await kv.set("gentleDays", [...gentle]);
     await setLog(log);
   } else { await setLog({}); await kv.set("gentleDays", []); }
-  await kv.set("plan", null);
+  await kv.set("plan", null); await kv.del("anchor"); await kv.del("stage3Since"); await kv.set("seenNudges", {});
   await save({ onboarded: true, persona: kind === "shift" ? "A harder stretch" : kind === "steady" ? "A good rhythm" : "Fresh start", consent: { ...S.s.consent, agreedAt: S.s.consent.agreedAt || new Date().toISOString(), checkin: true } });
   S.sheet = null; S.tab = "home"; S.chat = null;
   await refresh(); window.scrollTo({ top: 0 });

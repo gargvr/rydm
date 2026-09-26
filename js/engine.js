@@ -12,8 +12,9 @@
 
 export const SIGNALS = [
   { key: "sleepMin",     label: "Sleep",           bad: "both", floor: 25,  fmt: fmtDur,   source: "sleep" },
-  { key: "onset",        label: "Bedtime",         bad: "up",   floor: 25,  fmt: fmtClock, source: "sleep" },
-  { key: "irregularity", label: "Sleep rhythm",    bad: "up",   floor: 12,  fmt: v => `±${Math.round(v)} min`, source: "sleep", derived: true },
+  // Sleep timing = midpoint of sleep (team spec). Later midpoints and a less regular midpoint are the signals.
+  { key: "midpoint",     label: "Sleep timing",    bad: "up",   floor: 25,  fmt: fmtClock, source: "sleep", derived: true },
+  { key: "irregularity", label: "Sleep regularity", bad: "up",  floor: 12,  fmt: v => `±${Math.round(v)} min`, source: "sleep", derived: true },
   { key: "steps",        label: "Movement",        bad: "down", floor: 900, fmt: v => `${fmtInt(v)} steps`, source: "steps" },
   { key: "exercise",     label: "Active minutes", bad: "down", floor: 5, fmt: v => `${Math.round(v)} min`, source: "steps" },
   { key: "places",       label: "Places",          bad: "down", floor: 0.7, fmt: v => `${(Math.round(v * 10) / 10).toString()} a day`, source: "places" },
@@ -25,13 +26,14 @@ export const SIGNALS = [
   { key: "hrv",          label: "Heart variability", bad: "down", floor: 5, fmt: v => `${Math.round(v)} ms`, source: "heart" },
   { key: "daylight",     label: "Daylight",      bad: "down", floor: 10,  fmt: v => `${Math.round(v)} min`, source: "daylight" },
   { key: "mood",         label: "Mood",            bad: "down", floor: 0.5, fmt: v => `${(Math.round(v * 10) / 10)} / 5`, source: "checkin" },
-  { key: "energy",       label: "Energy",          bad: "down", floor: 0.5, fmt: v => `${(Math.round(v * 10) / 10)} / 5`, source: "checkin" },
+  { key: "pleasure",     label: "Enjoyment",       bad: "down", floor: 0.5, fmt: v => `${(Math.round(v * 10) / 10)} / 5`, source: "checkin" },
 ];
 
 export const CONFIG = {
-  minDaysForBaseline: 21,  // days with data before any judgement is made
-  recentDays: 14,          // look-back window (ICD-11 two-week convention)
-  baselineDays: 28,        // the "usual you" window, right before the look-back
+  minDaysForBaseline: 24,  // days with data before any judgement is made (14 baseline + 10 of the next 14)
+  recentDays: 14,          // comparison window (team spec; ICD-11 two-week convention)
+  baselineDays: 14,        // team spec: 14-day baseline. Anchored while a shift lasts (see analyze), so a
+                           // slow slide can't quietly become the new "usual".
   zFlag: 1.5,              // a day counts as "off" beyond 1.5 robust SDs in the unhelpful direction
   persistShift: 0.6,       // drifting: off on at least 60% of recent days...
   zMedianShift: 1.2,       // ...and the recent week's median is clearly off too
@@ -85,8 +87,9 @@ export function prepare(rawDays) {
   const first = rawDays[0].date, last = rawDays[rawDays.length - 1].date;
   const out = [];
   for (let d = first; d <= last; d = addDays(d, 1)) out.push({ ...(byDate.get(d) || { date: d }) });
+  for (const d of out) if (isNum(d.onset) && isNum(d.sleepMin)) d.midpoint = d.onset + d.sleepMin / 2;
   for (let i = 0; i < out.length; i++) {
-    const win = out.slice(Math.max(0, i - 6), i + 1).map(x => x.onset).filter(isNum);
+    const win = out.slice(Math.max(0, i - 6), i + 1).map(x => x.midpoint).filter(isNum);
     out[i].irregularity = win.length >= 4 ? sd(win) : undefined;
   }
   return out;
@@ -94,7 +97,7 @@ export function prepare(rawDays) {
 
 const excluded = d => Array.isArray(d.tags) && d.tags.length > 0;
 
-export function analyze(rawDays, enabledSources) {
+export function analyze(rawDays, enabledSources, opts = {}) {
   const days = prepare(rawDays);
   const withData = days.filter(d => SIGNALS.some(s => isNum(d[s.key])));
   const result = { days, level: 0, learning: false, learnedDays: withData.length, signals: [], facts: [], offDays: 0, window: null };
@@ -102,7 +105,11 @@ export function analyze(rawDays, enabledSources) {
 
   const end = days.length;
   const recent = days.slice(Math.max(0, end - CONFIG.recentDays), end);
-  const base = days.slice(Math.max(0, end - CONFIG.recentDays - CONFIG.baselineDays), Math.max(0, end - CONFIG.recentDays));
+  // Baseline: the 14 days before the comparison window, or, while a shift is ongoing,
+  // the 14 days before it began (opts.anchor = last day of the steady baseline).
+  let baseEnd = Math.max(0, end - CONFIG.recentDays);
+  if (opts.anchor) { const i = days.findIndex(d => d.date > opts.anchor); if (i > CONFIG.baselineDays / 2 && i < baseEnd) baseEnd = i; }
+  const base = days.slice(Math.max(0, baseEnd - CONFIG.baselineDays), baseEnd);
   result.window = { from: recent[0]?.date, to: recent[recent.length - 1]?.date, baseFrom: base[0]?.date, baseTo: base[base.length - 1]?.date };
   const recentValid = recent.filter(d => !excluded(d));
   const baseValid = base.filter(d => !excluded(d));
@@ -134,8 +141,10 @@ export function analyze(rawDays, enabledSources) {
 
   const shifts = result.signals.filter(s => s.status === "shift");
   const milds = result.signals.filter(s => s.status === "mild");
-  const feel = shifts.some(s => s.key === "mood" || s.key === "energy");
-  result.level = shifts.length >= 3 || (shifts.length >= 2 && feel) ? 2 : (shifts.length >= 1 || milds.length >= 2) ? 1 : 0;
+  const feel = shifts.some(s => s.key === "mood" || s.key === "pleasure");
+  result.norms = norms(recentValid, enabledSources);
+  result.level = shifts.length >= 3 || (shifts.length >= 2 && feel) || (shifts.length >= 2 && result.norms.length) ? 2
+               : (shifts.length >= 1 || milds.length >= 2 || result.norms.length) ? 1 : 0;
   result.offDays = [...offCount.values()].filter(n => n >= 2).length;
   result.excludedDays = recent.length - recentValid.length;
   result.facts = [...shifts, ...milds].map(factFor).filter(Boolean);
@@ -147,8 +156,8 @@ export function factFor(s) {
   const c = s.center, r = s.recentMedian;
   switch (s.key) {
     case "sleepMin": return `Sleep: about ${fmtDur(r)} a night lately, compared with your usual ${fmtDur(c)}.`;
-    case "onset": return `Bedtime: falling asleep around ${fmtClock(r)}, about ${fmtDelta(Math.abs(r - c))} ${r > c ? "later" : "earlier"} than your usual ${fmtClock(c)}.`;
-    case "irregularity": return `Sleep rhythm: bedtime has varied by about ±${Math.round(r)} minutes night to night, versus your usual ±${Math.round(c)}.`;
+    case "midpoint": return `Sleep timing: the middle of your night is around ${fmtClock(r)}, about ${fmtDelta(Math.abs(r - c))} ${r > c ? "later" : "earlier"} than your usual ${fmtClock(c)}.`;
+    case "irregularity": return `Sleep regularity: your sleep timing has varied by about ±${Math.round(r)} minutes night to night, versus your usual ±${Math.round(c)}.`;
     case "steps": return `Movement: about ${fmtInt(r)} steps a day, down from your usual ${fmtInt(c)}.`;
     case "homeStay": return `Time at home: about ${Math.round(r)}% of the day lately, more than your usual ${Math.round(c)}%.`;
     case "rangeKm": return `Range: you've moved within about ${Math.round(r * 10) / 10} km of your day's centre, less than your usual ${Math.round(c * 10) / 10} km.`;
@@ -158,7 +167,7 @@ export function factFor(s) {
     case "hrv": return `Heart rate variability: around ${Math.round(r)} ms lately, lower than your usual ${Math.round(c)}.`;
     case "daylight": return `Daylight: about ${Math.round(r)} minutes outside a day, down from your usual ${Math.round(c)}.`;
     case "mood": return `Mood (your check-ins and any moods logged in Health): around ${Math.round(r * 10) / 10} out of 5, lower than your usual ${Math.round(c * 10) / 10}.`;
-    case "energy": return `Energy check-ins: around ${Math.round(r * 10) / 10} out of 5, lower than your usual ${Math.round(c * 10) / 10}.`;
+    case "pleasure": return `Enjoyment: around ${Math.round(r * 10) / 10} out of 5 in your check-ins, lower than your usual ${Math.round(c * 10) / 10}.`;
   }
 }
 
@@ -196,4 +205,27 @@ export function buildSummary(result, name) {
   lines.push("");
   lines.push("This is not a diagnosis. Lueur compares me only with my own usual patterns, and I chose to share this.");
   return lines.join("\n");
+}
+
+// ---------- general healthy ranges (team spec: not only change, also absolute levels) ----------
+// Framed as "outside the range most adults feel best in", never as a diagnosis.
+// Sources to cite: adult sleep 7-9 h (AASM/SRS consensus, Watson et al. 2015); under ~5,000 steps/day
+// is commonly called sedentary (Tudor-Locke et al. 2013). Mood/enjoyment floors are our own design choice.
+export const NORMS = [
+  { key: "sleepMin", source: "sleep",   test: v => v < 360, text: v => `Sleep has averaged ${fmtDur(v)} this week. Most adults feel best with 7 to 9 hours.` },
+  { key: "sleepMin", source: "sleep",   test: v => v > 630, text: v => `Sleep has averaged ${fmtDur(v)} this week, more than most adults need.` },
+  { key: "steps",    source: "steps",   test: v => v < 4000, text: v => `Around ${fmtInt(v)} steps a day this week, below the 5,000 often used as a first goal.` },
+  { key: "mood",     source: "checkin", test: v => v <= 2, text: () => `Your mood check-ins have been low most days this week.` },
+  { key: "pleasure", source: "checkin", test: v => v <= 2, text: () => `You've enjoyed things less than usual most days this week.` },
+];
+function norms(recentDays, enabledSources) {
+  const last7 = recentDays.slice(-7), out = [];
+  for (const n of NORMS) {
+    if (enabledSources && !enabledSources.includes(n.source)) continue;
+    const vals = last7.map(d => d[n.key]).filter(isNum);
+    if (vals.length < 4) continue;
+    const m = median(vals);
+    if (n.test(m)) out.push({ key: n.key, value: m, text: n.text(m) });
+  }
+  return out;
 }
