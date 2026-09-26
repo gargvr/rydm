@@ -7,6 +7,7 @@ import { ALL, quest, planToday, getLog, setLog, complete, isActiveDay, monthStat
 import { decide, directWithModel } from "./director.js";
 import { node } from "./chat.js";
 import { stageOf, buildNudges, availableNow, daysBetween } from "./nudges.js";
+import { readAppleHealth } from "./appleHealth.js";
 import { hasWebGPU, loadModel, isLoaded, getEngine } from "./slm.js";
 
 const $app = document.getElementById("app");
@@ -281,7 +282,7 @@ function profile() {
   <div class="stack-lg">
     <div class="card row" style="gap:14px"><img src="${thumb(c.id, "joy", 160)}" alt="" style="width:84px;height:84px"><div><h2>${esc(S.s.name || "You")}</h2><p class="muted small">with ${esc(c.name)} · ${esc(c.trait)}</p></div></div>
     <div class="card">
-      ${[["🐣", "My companion", c.name, "changeCompanion"], ["🤝", "Trusted person", S.s.trusted.name || "Not set", "trusted"], ["🛡️", "Insurance", ins ? ins.name : "Not linked", ins ? "tab-quests" : "linkInsurer"], ["🔒", "Privacy & data", "What stays on your phone", "privacy"], ["✨", "On-device AI", isLoaded() ? "On" : "Off", "ai"], ["🧪", "Demo data", S.s.persona ? S.s.persona : "None", "demo"]]
+      ${[["🐣", "My companion", c.name, "changeCompanion"], ["🤝", "Trusted person", S.s.trusted.name || "Not set", "trusted"], ["🛡️", "Insurance", ins ? ins.name : "Not linked", ins ? "tab-quests" : "linkInsurer"], ["🔒", "Privacy & data", "What stays on your phone", "privacy"], ["✨", "On-device AI", isLoaded() ? "On" : "Off", "ai"], ["📊", "Your data", S.s.persona ? S.s.persona : "None yet", "dataSheet"], ["🧪", "Demo controls", "Stories, notifications, skip ahead", "demo"]]
         .map(([i, t, s, a]) => `<button class="lrow" data-act="${a}"><span class="ic">${i}</span><span class="t"><b>${t}</b><span>${esc(s)}</span></span>›</button>`).join("")}
     </div>
     <p class="tiny muted" style="text-align:center">RYDM prototype · Geneva {ai} Hackathon 2026 · Your data never leaves this device.</p>
@@ -317,6 +318,7 @@ function onboarding() {
     () => `${back}<div style="height:200px" data-stage></div><div class="stack"><h1>Last step</h1><p class="muted small">${esc(c.name)} needs a few weeks to learn your usual rhythm. For the demo, pick a story:</p></div>
       <button class="card lrow" data-act="startDemo" data-arg="steady"><span class="ic">🌤️</span><span class="t"><b>A good rhythm</b><span>Steady weeks, quests and rewards</span></span>›</button>
       <button class="card lrow" data-act="startDemo" data-arg="shift"><span class="ic">🌙</span><span class="t"><b>A harder stretch</b><span>Sleep and movement slide for three weeks: see gentle mode</span></span>›</button>
+      <button class="card lrow" data-act="dataSheet"><span class="ic">🍎</span><span class="t"><b>Use my Apple Health data</b><span>Import your Health export, read on this phone</span></span>›</button>
       <button class="card lrow" data-act="startDemo" data-arg="fresh"><span class="ic">🌱</span><span class="t"><b>Start fresh</b><span>Begin today with check-ins</span></span>›</button>`,
   ];
   return `<div class="stack-lg">${dots}${V[st]()}</div>`;
@@ -330,6 +332,21 @@ function sheetHTML() {
   if (s.type === "celebrate") b = `<div style="height:240px" data-stage></div><div class="stack" style="text-align:center"><h2>${esc(c.cheer)}</h2><p class="muted">+${RULES.pointsPerQuest} points${s.active ? ` · Active day! +${RULES.dayBonus} bonus` : ""}</p><button class="btn" data-act="close">Yay!</button></div>`;
   if (s.type === "breathe") b = `<h2 style="text-align:center">Breathe with ${esc(c.name)}</h2><div class="breath-stage" data-stage></div><p class="breath-label" id="blabel">Get comfy</p><p class="small muted" style="text-align:center">In 4 · hold 4 · out 4 · hold 4</p><button class="btn ghost" data-act="breathDone">Done</button>`;
   if (s.type === "chat") b = `<div class="stack">${chat()}</div>`;
+  if (s.type === "dataSheet") {
+    const isDemo = /^(A good rhythm|A harder stretch|Fresh start)$/.test(S.s.persona || "");
+    const n = S.days.length, first = S.days[0]?.date, last = S.days[n - 1]?.date;
+    b = `<h2>Your data</h2>
+    <div class="card stack small"><p><b>Now using:</b> ${esc(S.s.persona || "Nothing yet")}${isDemo ? ` <span class="demo-tag">Demo</span>` : ""}</p>
+      ${n ? `<p class="muted">${n} days, ${esc(first)} to ${esc(last)}. Stored only on this phone.</p>` : ""}</div>
+    <div class="card stack"><h3>Use real Apple Health data</h3>
+      <p class="small muted">On the iPhone: Health app › your profile picture › <b>Export All Health Data</b>. Save the file, then choose it here. It's read on this phone; nothing is uploaded.</p>
+      <label class="btn" style="position:relative">Choose export.zip or export.xml<input type="file" id="ah-file" accept=".zip,.xml,application/zip,text/xml" data-act="ahFile" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label>
+      <p class="small" id="ah-status">${s.status ? esc(s.status) : ""}</p>
+      <p class="tiny muted">Reads the last five months of steps, sleep, active minutes, time in daylight, resting heart rate and heart rate variability.</p></div>
+    ${n && isDemo ? `<button class="btn ghost" data-act="removeDemo">Remove demo data</button><p class="tiny muted" style="text-align:center">Your companion, name and settings stay. Only the example days, quests and points go.</p>` : ""}
+    ${n && !isDemo ? `<button class="btn ghost" data-act="removeDemo">Remove this data</button>` : ""}
+    ${!n || !isDemo ? `<button class="btn ghost" data-act="demo">Load demo data instead</button>` : ""}`;
+  }
   if (s.type === "notes") b = `<h2>Notes from ${esc(c.name)}</h2>${S.nudges.length ? S.nudges.map(n => `<div class="card stack note-${n.kind}"><span class="tiny muted">${{ info: "Something changed", question: "A quick question", sustained: "Worth checking in", escalate: "Next step" }[n.kind]}</span><h3>${esc(n.title)}</h3><p class="small">${esc(n.body)}</p><div class="row wrap">${n.ctas.map(([l, a], i) => `<button class="btn ${i ? "ghost " : ""}small" data-act="cta" data-arg="${a}">${esc(l)}</button>`).join("")}</div></div>`).join("") : `<p class="muted">Nothing new. Your rhythm looks close to your usual. 🌿</p>`}
     <p class="tiny muted">Notes compare you only with your own usual pattern and general healthy ranges. They are not a diagnosis.</p>`;
   if (s.type === "available") b = availableHTML();
@@ -422,6 +439,27 @@ async function act(a, arg, el, ev) {
     case "changeCompanion": case "privacy": case "ai": case "demo": S.sheet = { type: a }; render(); break;
     case "loadAI": { const p = document.getElementById("aiprog"); try { await loadModel("phone", x => { if (p) p.textContent = `Downloading… ${Math.round(x * 100)}%`; }); toast("AI is on"); S.sheet = null; await refresh(); } catch (e) { if (p) p.textContent = e.message; } break; }
     case "wipe": await wipeAll(); location.reload(); break;
+    case "dataSheet": S.sheet = { type: "dataSheet" }; render(); break;
+    case "removeDemo": {
+      await clearDays(); await setLog({}); await kv.set("gentleDays", []); await kv.set("plan", null);
+      await kv.del("anchor"); await kv.del("stage3Since"); await kv.set("seenNudges", {});
+      await save({ persona: null }); S.sheet = null; S.tab = "home"; await refresh(); toast("Data removed"); break;
+    }
+    case "ahFile": {
+      const f = el.files?.[0]; if (!f) break;
+      const st = document.getElementById("ah-status");
+      try {
+        const { days, records } = await readAppleHealth(f, x => { if (st) st.textContent = `Reading on this phone… ${Math.round(x * 100)}%`; });
+        await clearDays(); await putDays(days);
+        await setLog({}); await kv.set("gentleDays", []); await kv.set("plan", null);
+        await kv.del("anchor"); await kv.del("stage3Since"); await kv.set("seenNudges", {});
+        const has = k => days.some(d => d[k] != null);
+        await save({ persona: "Apple Health (imported)", onboarded: true, consent: { ...S.s.consent, agreedAt: S.s.consent.agreedAt || new Date().toISOString(), steps: has("steps") || S.s.consent.steps, sleep: has("sleepMin") || S.s.consent.sleep, heart: has("restingHR") || has("hrv"), daylight: has("daylight") } });
+        S.sheet = null; S.tab = "home"; await refresh(); window.scrollTo({ top: 0 });
+        toast(`Imported ${days.length} days from ${records.toLocaleString("en-CH")} records`);
+      } catch (e) { if (st) st.textContent = e.message; }
+      break;
+    }
     case "openNotes": document.querySelector(".banner")?.remove(); S.sheet = { type: "notes" }; render(); break;
     case "cta": {
       S.sheet = null;
