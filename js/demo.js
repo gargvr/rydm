@@ -44,3 +44,37 @@ export function generate(persona = "shift", nDays = 63, endDate = isoDate(new Da
   }
   return out;
 }
+
+// ---------- Test profiles (for checking the whole path: data -> notes -> chatbot -> outcome) ----------
+export const TEST_PROFILES = {
+  lea:   { name: "Léa",   age: 29, label: "Test A · Léa: data shifted, struggling",      blurb: "Six steady weeks, then 3 weeks of shorter, later, irregular sleep, fewer steps, more time at home, lower HRV, higher resting heart rate, low mood and enjoyment check-ins." },
+  marco: { name: "Marco", age: 34, label: "Test B · Marco: data shifted, feels fine",     blurb: "Sleep got short and late and steps dropped (new job, long commute), but his mood and enjoyment check-ins stay normal." },
+  sofia: { name: "Sofia", age: 22, label: "Test C · Sofia: data steady, opens chat herself", blurb: "Sleep, steps, places and heart all look normal. She opens the chat on her own because she feels low." },
+};
+export function generateProfile(id, nDays = 63, endDate = isoDate(new Date())) {
+  const r = rng({ lea: 11, marco: 22, sofia: 33 }[id] || 1);
+  const start = addDays(endDate, -(nDays - 1)), drift = nDays - 21;
+  const out = [];
+  for (let i = 0; i < nDays; i++) {
+    const date = addDays(start, i), dow = new Date(date + "T12:00:00").getDay(), we = dow === 0 || dow === 6;
+    const p = id !== "sofia" && i >= drift ? Math.min(1, (i - drift + 1) / 7) : 0;       // ramps in over a week
+    const feel = id === "lea" ? p : 0;                                                   // only Léa's check-ins drop
+    const d = { date, source: "test" };
+    d.onset = Math.round(680 + (we ? 30 : 0) + p * 95 + gauss(r) * (15 + p * 35));        // 23:20 -> ~01:00
+    d.sleepMin = Math.round(450 + (we ? 25 : 0) - p * 95 + gauss(r) * 20);                // 7h30 -> ~5h55
+    d.steps = Math.max(400, Math.round((we ? 9300 : 8300) * (1 - p * 0.55) + gauss(r) * 1100));
+    d.exercise = Math.max(0, Math.round((we ? 40 : 30) * (1 - p * 0.7) + gauss(r) * 6));
+    d.daylight = Math.max(3, Math.round((we ? 85 : 65) * (1 - p * 0.6) + gauss(r) * 12));
+    d.restingHR = Math.round((58 + p * (id === "lea" ? 7 : 3) + gauss(r) * 1.5) * 10) / 10;
+    d.hrv = Math.round((47 - p * (id === "lea" ? 15 : 6) + gauss(r) * 4) * 10) / 10;
+    d.places = Math.round(clamp((we ? 3.5 : 3) * (1 - p * 0.55) + gauss(r) * 0.7, 1, 8));
+    d.homeStay = Math.round(clamp((we ? 60 : 52) + p * 30 + gauss(r) * 5, 20, 98));
+    d.rangeKm = Math.round(clamp((we ? 8 : 6) * (1 - p * 0.6) + gauss(r) * 1, 0.3, 40) * 10) / 10;
+    if (r() < 0.85) {
+      d.mood = Math.round(clamp(3.9 - feel * 2 + gauss(r) * 0.5, 1, 5));
+      d.pleasure = Math.round(clamp(3.8 - feel * 2.1 + gauss(r) * 0.5, 1, 5));
+    }
+    out.push(d);
+  }
+  return out;
+}

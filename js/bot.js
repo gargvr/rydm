@@ -70,6 +70,7 @@ export function extensionNeeded(answers, ctx) {
 export function extensionQuestions(ctx) { return ITEMS.filter(it => it.set === "ext" && (!it.when || it.when(ctx))); }
 
 export function ackFor(item, value, i) {
+  if (item.safety) return "Thank you for answering that. I know it's not an easy question.";
   if (value == null) return pick(ACK.unsure, i);
   const max = item.set === "who5" ? 5 : 3, good = item.set === "who5" ? value >= 4 : value === 0;
   const low = item.set === "who5" ? value <= 1 : value >= 2;

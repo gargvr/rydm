@@ -1,6 +1,6 @@
 import { kv, allDays, putDays, upsertDay, getDay, clearDays, wipeAll } from "./store.js";
 import { analyze, isoDate, addDays, fmtDur, fmtClock } from "./engine.js";
-import { generate } from "./demo.js";
+import { generate, TEST_PROFILES, generateProfile } from "./demo.js";
 import { COMPANIONS, byId } from "./companions.js";
 import { createMascot, renderThumbnail } from "./mascot3d.js";
 import { ALL, quest, planToday, getLog, setLog, complete, isActiveDay, monthStats, streak, insurerView, demoLog, INSURERS, RULES } from "./quests.js";
@@ -266,7 +266,8 @@ function freeNode(id) {
   say(n.say(S.s.name || "friend"), id === "low" || id === "persist" ? "caring" : id === "better" ? "joy" : "happy", () => { S.chat.pending = { type: "chips", opts: n.chips, free: true }; });
 }
 function bioFlags() {
-  const moved = new Set((S.result?.signals || []).filter(x => x.status === "shift" || x.status === "mild").map(x => x.key));
+  // Only clear shifts count as data flags for the chat; small wobbles don't.
+  const moved = new Set((S.result?.signals || []).filter(x => x.status === "shift").map(x => x.key));
   const has = (...k) => k.some(x => moved.has(x));
   const flags = { sleep: has("sleepMin", "midpoint", "irregularity"), movement: has("steps", "exercise", "homeStay", "places", "rangeKm"), recovery: has("hrv", "restingHR"), mood: has("mood", "pleasure") };
   return { flags, bioFlagged: S.stage >= 2 || (S.result?.signals || []).some(x => x.status === "shift") };
@@ -475,6 +476,9 @@ function sheetHTML() {
   if (s.type === "ai") b = `<h2>On-device AI ✨</h2><p class="small muted">Let a small AI model on your phone help ${esc(c.name)} react to your day in its own words. About 880 MB, downloaded once, Wi-Fi recommended. It only sees words like "short sleep" or "quest done", never your data.</p>
       ${isLoaded() ? `<p><b>It's on.</b></p>` : hasWebGPU() ? `<button class="btn" data-act="loadAI">Download and turn on</button><p class="tiny muted" id="aiprog"></p>` : `<p class="small">This device can't run it yet. ${esc(c.name)} will use its own lines.</p>`}`;
   if (s.type === "demo") b = `<h2>Demo controls</h2><button class="card lrow" data-act="startDemo" data-arg="steady"><span class="ic">🌤️</span><span class="t"><b>A good rhythm</b></span>›</button><button class="card lrow" data-act="startDemo" data-arg="shift"><span class="ic">🌙</span><span class="t"><b>A harder stretch (gentle mode)</b></span>›</button>
+    <h3 style="margin-top:6px">Test profiles</h3>
+    ${Object.entries(TEST_PROFILES).map(([id, t]) => `<button class="card lrow" data-act="loadProfile" data-arg="${id}"><span class="ic">🧪</span><span class="t"><b>${esc(t.label)}</b><span>${esc(t.blurb)}</span></span>›</button>`).join("")}
+    <h3 style="margin-top:6px">Tools</h3>
     <button class="card lrow" data-act="demoNote" data-arg="0"><span class="ic">🔔</span><span class="t"><b>Show the top notification</b><span>As it would arrive on the phone</span></span>›</button>
     <button class="card lrow" data-act="startCheckin" data-arg="app"><span class="ic">💬</span><span class="t"><b>Start the check-in (as if from a notification)</b><span>Guided questions, based on the flagged data</span></span>›</button>
     <button class="card lrow" data-act="showReport"><span class="ic">📄</span><span class="t"><b>Last check-in report</b><span>What the other modules receive</span></span>›</button>
@@ -557,6 +561,15 @@ async function act(a, arg, el, ev) {
     case "loadAI": { const p = document.getElementById("aiprog"); try { await loadModel("phone", x => { if (p) p.textContent = `Downloading… ${Math.round(x * 100)}%`; }); toast("AI is on"); S.sheet = null; await refresh(); } catch (e) { if (p) p.textContent = e.message; } break; }
     case "wipe": await wipeAll(); location.reload(); break;
     case "dataSheet": S.sheet = { type: "dataSheet" }; render(); break;
+    case "loadProfile": {
+      const t = TEST_PROFILES[arg];
+      await clearDays(); await putDays(generateProfile(arg, 63, today()));
+      await setLog({}); await kv.set("gentleDays", []); await kv.set("plan", null);
+      for (const k of ["anchor", "stage3Since", "inviteSnooze", "lastCheckin"]) await kv.del(k);
+      await kv.set("seenNudges", {}); window.RYDM_lastReport = null;
+      await save({ onboarded: true, name: t.name, persona: t.label, consent: { steps: true, sleep: true, heart: true, daylight: true, places: true, checkin: true, agreedAt: S.s.consent.agreedAt || new Date().toISOString() } });
+      S.sheet = null; S.tab = "home"; S.chat = null; await refresh(); window.scrollTo({ top: 0 }); break;
+    }
     case "liveHealth": {
       const r = await native.requestHealth(); await native.requestNotifications();
       if (!r?.granted) { toast("Health access wasn't granted"); break; }

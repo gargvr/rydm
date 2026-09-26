@@ -37,7 +37,7 @@ function info(sig, days) {
     }
     case "midpoint": return { title: "Your nights are running later", body: `The middle of your sleep has moved about ${fmtDelta(Math.abs(sig.recentMedian - sig.center))} later than usual.`, cta: "View trend", go: "journey" };
     case "irregularity": return { title: "Your sleep timing is less regular", body: `Your nights have varied more than usual this week.`, cta: "View trend", go: "journey" };
-    case "steps": { const w = week("steps"); if (!w) return null; return { title: "Activity has dipped this week", body: `Your step count is ${pct(w, sig.center)}% below your normal weekly average.`, cta: "View activity", go: "journey" }; }
+    case "steps": { const w = week("steps"); if (!w || pct(w, sig.center) < 15 || w > sig.center) return null; return { title: "Activity has dipped this week", body: `Your step count is ${pct(w, sig.center)}% below your normal weekly average.`, cta: "View activity", go: "journey" }; }
     case "exercise": return { title: "Fewer active minutes lately", body: `You've been a bit less active than your usual.`, cta: "View activity", go: "journey" };
     case "homeStay": return { title: "More time at home lately", body: `You've spent more of your days at home than usual this week.`, cta: "See quests", go: "quests" };
     case "places": case "rangeKm": return { title: "You've stayed closer to home", body: `You've been to fewer places than usual this week.`, cta: "See quests", go: "quests" };
