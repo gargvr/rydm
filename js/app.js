@@ -174,12 +174,16 @@ function home() {
       <div class="row wrap">${n3.ctas.map(([l, a], i) => `<button class="btn ${i ? "ghost " : ""}small" data-act="cta" data-arg="${a}">${esc(l)}</button>`).join("")}</div></div>` : ""}
 
     <div class="stack"><h2>Your rhythm this week</h2>
+      ${["sleepMin", "steps", "mood", "places"].every(k => avg(last(k)) == null) ? `<div class="card stack">
+        <p class="muted" style="margin:0">Nothing here yet. Your sleep, steps and mood will show up as the days go by, and only on this device.</p>
+        <button class="card lrow" data-act="dataSheet"><span class="ic">🍎</span><span class="t"><b>Use my Apple Health data</b><span>Fill this in from your Health app</span></span>›</button>
+        <button class="card lrow" data-act="demo"><span class="ic">✨</span><span class="t"><b>See it with sample data</b><span>You can remove it any time</span></span>›</button></div>` : `
       <div class="tiles">
         ${tile("🌙", "Sleep", avg(last("sleepMin")) != null ? fmtDur(avg(last("sleepMin"))) : "–", spark(last("sleepMin")), "avg per night")}
         ${tile("👟", "Steps", avg(last("steps")) != null ? Math.round(avg(last("steps"))).toLocaleString("en-CH").replace(/’/g, "'") : "–", spark(last("steps"), "var(--good)"), "avg per day")}
         ${tile("😊", "Mood", avg(last("mood")) != null ? (Math.round(avg(last("mood")) * 10) / 10) + " / 5" : "–", spark(last("mood"), "var(--warn)"), "check-ins")}
         ${tile("🧭", "Places", avg(last("places")) != null ? (Math.round(avg(last("places")) * 10) / 10) + " a day" : "–", spark(last("places"), "#5A9BD5"), "different spots")}
-      </div></div>
+      </div>`}</div>
   </div>`;
 }
 function tile(i, l, v, s, d) { return `<div class="tile"><span class="l">${i} ${l}</span><span class="v">${v}</span>${s}<span class="d">${d}</span></div>`; }
@@ -336,32 +340,72 @@ async function finishGuided() {
 const scrollEnd = () => requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
 
 function journey() {
-  const n = S.journey === "week" ? 7 : S.journey === "month" ? 30 : 63;
-  const days = S.days.slice(-n), prev = S.days.slice(-2 * n, -n);
-  const cmp = (k) => { const a = avg(days.map(d => d[k])), b = avg(prev.map(d => d[k])); return a != null && b ? (a - b) / b : null; };
-  const hi = [];
-  const sl = cmp("sleepMin"), stp = cmp("steps"), md = cmp("mood"), pl = cmp("places");
-  if (sl > 0.03) hi.push(["🌙", "You slept more", `+${Math.round(sl * 100)}%`]);
-  if (stp > 0.03) hi.push(["👟", "You moved more", `+${Math.round(stp * 100)}%`]);
-  if (md > 0.03) hi.push(["😊", "Your mood has been brighter", `+${Math.round(md * 100)}%`]);
-  if (pl > 0.03) hi.push(["🧭", "You explored more places", `+${Math.round(pl * 100)}%`]);
-  const q = Object.entries(S.log).filter(([k]) => days.some(d => d.date === k)).reduce((s, [, v]) => s + v.length, 0);
-  hi.push(["⭐", "Quests completed", `${q}`]);
-  if (hi.length === 1) hi.unshift(["🌱", "Every day you show up counts", "Keep going"]);
+  const known = S.days.filter(d => d.sleepMin != null || d.steps != null || d.mood != null).length;
+  const c = byId(S.s.companion) || { name: "Your companion" };
+  if (known < 3) return `${header("Your journey")}
+  <div class="stack-lg">
+    <div class="card stack" style="text-align:center;padding:26px 20px">
+      <span style="font-size:44px">🌱</span>
+      <h2>Your journey starts here</h2>
+      <p class="muted">${esc(c.name)} needs about two weeks to learn your usual rhythm. Each day you check in or share sleep and steps adds to your charts here.</p>
+      <div class="stack" style="gap:6px;text-align:left"><div class="row small" style="justify-content:space-between;font-weight:800"><span>Learning your rhythm</span><span>${known} of 14 days</span></div>
+        <div style="height:10px;border-radius:99px;background:var(--bg2);overflow:hidden"><div style="height:100%;width:${Math.max(4, known / 14 * 100)}%;background:var(--good);border-radius:99px"></div></div></div>
+    </div>
+    <div class="stack"><h2>Get started</h2>
+      <button class="card lrow" data-act="tab" data-arg="home"><span class="ic">😊</span><span class="t"><b>Do today's check-in</b><span>Two taps on Home, about 10 seconds</span></span>›</button>
+      <button class="card lrow" data-act="dataSheet"><span class="ic">🍎</span><span class="t"><b>Use my Apple Health data</b><span>${platform === "ios" ? "Read on this iPhone, never uploaded" : "Import your Health export, read on this device"}</span></span>›</button>
+      <button class="card lrow" data-act="demo"><span class="ic">✨</span><span class="t"><b>See it with sample data</b><span>Try a demo story, you can remove it any time</span></span>›</button>
+    </div>
+  </div>`;
+  const k = S.journey, n = k === "week" ? 7 : k === "month" ? 30 : S.days.length;
+  const days = S.days.slice(-n);
+  // compare with "your usual", the same baseline the notes use, so the two never disagree.
+  // Without a baseline yet, fall back to the period before.
+  const w = S.result?.window, usual = w?.baseFrom ? S.days.filter(d => d.date >= w.baseFrom && d.date <= w.baseTo) : null;
+  const prev = usual || (k === "all" ? S.days.slice(0, 14) : S.days.slice(-2 * n, -n));
+  const recent = k === "all" ? S.days.slice(-14) : days;
+  const vs = usual ? "your usual" : k === "week" ? "the week before" : k === "month" ? "the month before" : "your first two weeks";
+  const hm = m => `${Math.floor(m / 60)}h ${String(Math.round(m % 60)).padStart(2, "0")}`;
+  const row = (icon, title, now, was, fmt, diff) => {
+    if (now == null) return "";
+    let note = "";
+    if (was != null && prev.length >= 5) { const d = diff(now, was); note = d ? `${d} than ${vs}` : `About the same as ${vs}`; }
+    return `<div class="card row"><span style="font-size:24px">${icon}</span><div class="stack" style="gap:0"><b>${title}: ${fmt(now)}</b>${note ? `<span class="small muted" style="font-weight:700">${note}</span>` : ""}</div></div>`;
+  };
+  const pct = (a, b, up, down) => { const r = (a - b) / b; return Math.abs(r) < 0.05 ? "" : `${Math.round(Math.abs(r) * 100)}% ${r > 0 ? up : down}`; };
+  const q = Object.entries(S.log).filter(([d]) => days.some(x => x.date === d)).reduce((s, [, v]) => s + v.length, 0);
+  const A = (arr, key) => avg(arr.map(d => d[key]));
+  const cards = [
+    row("🌙", "Sleep", A(recent, "sleepMin"), A(prev, "sleepMin"), m => `${hm(m)} a night`, (a, b) => Math.abs(a - b) < 10 ? "" : `${Math.round(Math.abs(a - b))} min ${a > b ? "more" : "less"}`),
+    row("👟", "Steps", A(recent, "steps"), A(prev, "steps"), v => `${Math.round(v).toLocaleString("en-GB")} a day`, (a, b) => pct(a, b, "more", "fewer")),
+    row("😊", "Mood", A(recent, "mood"), A(prev, "mood"), v => `${v.toFixed(1)} / 5`, (a, b) => Math.abs(a - b) < 0.25 ? "" : `${a > b ? "Brighter" : "Lower"}`),
+    row("🧭", "Places", A(recent, "places"), A(prev, "places"), v => `${v.toFixed(1)} a day`, (a, b) => pct(a, b, "more", "fewer")),
+  ].join("");
+  const span = k === "all" ? "Last two weeks" : k === "week" ? "This week" : "This month";
+  const smooth = k === "week" ? 1 : k === "month" ? 3 : 7;
+  const dates = days.length ? [days[0].date, days.at(-1).date] : null;
   return `${header("Your journey")}
   <div class="stack-lg">
     <div class="seg">${[["week", "Week"], ["month", "Month"], ["all", "All time"]].map(([k, l]) => `<button data-act="journey" data-arg="${k}" aria-pressed="${S.journey === k}">${l}</button>`).join("")}</div>
-    <div class="card stack"><h3>Mood trend</h3>${lineChart(days.map(d => d.mood), 1, 5, "var(--good)", ["😣", "😐", "😄"])}</div>
-    <div class="card stack"><h3>Sleep</h3>${lineChart(days.map(d => d.sleepMin != null ? d.sleepMin / 60 : null), 4, 10, "var(--lav-ink)", ["4h", "7h", "10h"])}</div>
-    <div class="stack"><h2>Highlights</h2>${hi.map(([i, t, v]) => `<div class="card row"><span style="font-size:24px">${i}</span><div class="stack" style="gap:0"><b>${t}</b><span class="small" style="color:var(--good);font-weight:800">${v}</span></div></div>`).join("")}</div>
+    ${known < 14 ? `<div class="note">🌱 Still learning your rhythm: ${known} of 14 days. Comparisons appear once there's more to compare.</div>` : ""}
+    <div class="card stack"><h3>Mood</h3>${lineChart(roll(days.map(d => d.mood), smooth), 1, 5, "var(--good)", ["Low", "Okay", "Good"], dates)}</div>
+    <div class="card stack"><h3>Sleep</h3>${lineChart(roll(days.map(d => d.sleepMin != null ? d.sleepMin / 60 : null), smooth), 4, 10, "var(--lav-ink)", ["4h", "7h", "10h"], dates)}</div>
+    <div class="stack"><h2>${span}</h2>${cards || `<div class="card"><p class="muted">Not enough data yet.</p></div>`}
+      <div class="card row"><span style="font-size:24px">⭐</span><div class="stack" style="gap:0"><b>Quests completed: ${q}</b><span class="small muted" style="font-weight:700">Every day you show up counts</span></div></div></div>
+    ${smooth > 1 ? `<p class="small muted" style="text-align:center">Lines show a ${smooth}-day average, so one rough night doesn't dominate.</p>` : ""}
   </div>`;
 }
-function lineChart(vals, lo, hi, color, labels) {
-  const W = 320, H = 120, L = 30, P = 8, pts = vals.map((v, i) => [L + (i / Math.max(1, vals.length - 1)) * (W - L - P), v == null ? null : H - 16 - ((v - lo) / (hi - lo)) * (H - 28)]);
+// rolling average that skips missing days
+function roll(vals, w) { if (w <= 1) return vals; return vals.map((v, i) => v == null ? null : avg(vals.slice(Math.max(0, i - w + 1), i + 1))); }
+function lineChart(vals, lo, hi, color, labels, dates) {
+  const W = 320, H = dates ? 136 : 120, B = dates ? 32 : 16, L = 38, P = 8, top = 12, span = H - B - top;
+  const pts = vals.map((v, i) => [L + (i / Math.max(1, vals.length - 1)) * (W - L - P), v == null ? null : H - B - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * span]);
   let d = "", on = false; for (const [x, y] of pts) { if (y == null) continue; d += `${on ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`; on = true; }
   if (!d) return `<p class="small muted">Not enough data yet.</p>`;
+  const fd = s => new Date(s + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Trend">
-    ${labels.map((t, i) => `<text x="0" y="${H - 16 - (i / (labels.length - 1)) * (H - 28) + 4}">${t}</text>`).join("")}
+    ${labels.map((t, i) => { const y = H - B - (i / (labels.length - 1)) * span; return `<line x1="${L}" x2="${W - P}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-dasharray="3 4"/><text x="0" y="${y + 4}">${t}</text>`; }).join("")}
+    ${dates ? `<text x="${L}" y="${H - 8}">${fd(dates[0])}</text><text x="${W - P}" y="${H - 8}" text-anchor="end">${fd(dates[1])}</text>` : ""}
     <path d="${d}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
     ${pts.filter(p => p[1] != null).slice(-1).map(([x, y]) => `<circle cx="${x}" cy="${y}" r="4.5" fill="${color}"/>`).join("")}</svg>`;
 }
