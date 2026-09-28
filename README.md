@@ -84,3 +84,7 @@ The chatbot collects what sensors can't, and hands the screening modules a struc
 - **Mental-health detection is disclosed** at onboarding, runs on the phone, and is never sent anywhere.
 
 The insurer link in this prototype is a demo. No connection is made.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Copyright (c) 2026 Himanshu Garg.
