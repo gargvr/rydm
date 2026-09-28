@@ -2,6 +2,8 @@
 
 A playful wellbeing app with a 3D companion. Daily quests earn rewards from your supplementary health insurer, and a quiet on-device layer notices when your rhythm shifts and gently helps you find support. Geneva {ai} Hackathon 2026, AGPsy challenge.
 
+**Built by** Himanshu Garg · **with ideas and research from** Ayman Chidda, Alexander Darlington, Romain Janz, Vanesa Ordolli, Layal Saleh, Magí Sherzad
+
 ## Run
 
 ```bash
